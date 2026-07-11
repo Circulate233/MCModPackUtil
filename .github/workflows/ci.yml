@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test
+
+  release-artifacts:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: mcmpu.exe
+            exe: mcmpu.exe
+            artifact: mcmpu-0.1.0-windows-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: mcmpu
+            exe: mcmpu
+            artifact: mcmpu-0.1.0-linux-x86_64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            bin: mcmpu
+            exe: mcmpu
+            artifact: mcmpu-0.1.0-macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            bin: mcmpu
+            exe: mcmpu
+            artifact: mcmpu-0.1.0-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+        env:
+          MCMODPACKUTIL_CURSEFORGE_API_KEY: ${{ secrets.MCMODPACKUTIL_CURSEFORGE_API_KEY }}
+      - shell: bash
+        run: |
+          set -eu
+          mkdir -p package
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "package/${{ matrix.exe }}"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            printf '%s\r\n' '@echo off' 'setlocal' 'set "MCMPU_DIR=%~dp0"' '"%MCMPU_DIR%mcmpu.exe" %*' 'exit /b %ERRORLEVEL%' > package/mcmpu.bat
+          fi
+      - shell: pwsh
+        run: Compress-Archive -Path package/* -DestinationPath "${{ matrix.artifact }}.zip" -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip

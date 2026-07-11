@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>mcmpu GUI Mockup</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #f2f4f6; color: #1f2933; }
+    .app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+    aside { background: #e4e8ed; padding: 18px 14px; border-right: 1px solid #d3dbe3; }
+    .brand { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .brand strong { font-size: 21px; }
+    .brand span { color: #647382; font-size: 12px; }
+    .cmd { width: 100%; height: 36px; margin: 3px 0; padding: 0 12px; border: 0; border-radius: 7px; text-align: left; background: #d7dfe6; color: #26323f; font-size: 14px; }
+    .cmd.active { background: #1cac86; color: white; font-weight: 600; }
+    main { padding: 24px; display: grid; grid-template-rows: auto 1fr auto; gap: 12px; }
+    .panel { background: white; border: 1px solid #dae0e8; border-radius: 10px; padding: 18px; }
+    .title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    h1 { font-size: 24px; margin: 0; }
+    .desc { color: #6e7d8c; font-size: 13px; }
+    .row { display: grid; grid-template-columns: 148px 1fr auto; gap: 10px; align-items: center; min-height: 40px; }
+    .row.compact { grid-template-columns: 148px auto 1fr; min-height: 34px; }
+    label { color: #5a6978; font-size: 13px; }
+    input, select { height: 30px; padding: 6px 9px; border: 1px solid #c7d0d9; border-radius: 6px; background: #f3f5f7; font-size: 14px; }
+    input[type="checkbox"] { width: 16px; height: 16px; }
+    .browse { height: 30px; padding: 0 14px; border: 0; border-radius: 7px; background: #1cac86; color: white; font-weight: 600; }
+    pre { margin: 0; min-height: 220px; padding: 14px; overflow: auto; background: #f5f6f7; border: 1px solid #dae0e8; border-radius: 10px; color: #404e48; font: 13px Consolas, monospace; }
+    footer { display: flex; justify-content: space-between; align-items: center; }
+    .status { color: #5a6978; font-size: 13px; }
+    .run { min-width: 140px; height: 38px; border: 0; border-radius: 7px; background: #1cac86; color: white; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand"><strong>mcmpu</strong><span>0.1.0</span></div>
+      <button class="cmd active">初始化</button>
+      <button class="cmd">Mod 列表</button>
+      <button class="cmd">构建</button>
+      <button class="cmd">检查</button>
+      <button class="cmd">运行客户端</button>
+      <button class="cmd">运行服务端</button>
+    </aside>
+    <main>
+      <section class="panel">
+        <div class="title">
+          <h1>初始化</h1>
+          <div class="desc">从 CurseForge 整合包 Zip 创建项目</div>
+        </div>
+        <div class="row compact">
+          <label>自定义项目目录</label><input type="checkbox"><span></span>
+        </div>
+        <div class="row">
+          <label>整合包 Zip</label><input value="F:\packs\pack.zip"><button class="browse">浏览</button>
+        </div>
+        <div class="row compact">
+          <label>自定义输出目录</label><input type="checkbox"><span></span>
+        </div>
+        <div class="row">
+          <label>语言</label>
+          <select><option>跟随系统</option><option>zh-CN</option><option>en-US</option></select>
+          <span></span>
+        </div>
+        <div class="row compact">
+          <label>代理</label><input type="checkbox" checked><span></span>
+        </div>
+        <div class="row">
+          <label>代理 IP</label><input value="127.0.0.1"><span></span>
+        </div>
+        <div class="row">
+          <label>代理端口</label><input value="7890"><span></span>
+        </div>
+      </section>
+      <pre>[init] waiting</pre>
+      <footer>
+        <div class="status">就绪</div>
+        <button class="run">运行 init</button>
+      </footer>
+    </main>
+  </div>
+</body>
+</html>
