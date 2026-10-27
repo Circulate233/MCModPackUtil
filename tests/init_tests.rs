@@ -66,11 +66,16 @@ fn init_writes_config_lists_and_common_overrides_for_empty_manifest() {
     assert!(!config.contains("curseforge_api_key"));
     assert!(!config.lines().any(|line| line.trim() == "api_key = \"\""));
     assert!(config.contains("scalar_version = 2"));
+    let parsed_config = mcmpu::config::Config::from_path(out.join("config.toml")).unwrap();
+    assert!(parsed_config.language.is_empty());
     assert!(config.contains("[java.client]"));
     assert!(config.contains("[java.server]"));
     assert!(!config.contains("java_path"));
     assert!(!config.contains("CHANGE_ME_JAVA_PATH"));
-    mcmpu::config::Config::from_path(out.join("config.toml")).unwrap();
+    let test_run = mcmpu::config::TestRunConfig::from_project(&out).unwrap();
+    assert_eq!(test_run.player_name, "Player");
+    assert!(out.join("test-run.toml").is_file());
+    assert!(!out.join(".mcmpu/test-run.toml").exists());
     let common: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(out.join("common.json")).unwrap()).unwrap();
     let client: serde_json::Value =
@@ -250,6 +255,58 @@ fn init_rejects_non_empty_manifest_without_api_key() {
     let err = initialize_from_zip(&zip_path, temp.path().join("out"), "zh-CN").unwrap_err();
 
     assert!(err.to_string().contains("CurseForge API key"));
+}
+
+#[test]
+fn init_preserves_server_files_without_direct_download_urls() {
+    let temp = tempfile::tempdir().unwrap();
+    let zip_path = temp.path().join("pack.zip");
+    let out = temp.path().join("project");
+    support::write_zip(
+        &zip_path,
+        &[(
+            ("manifest.json"),
+            manifest_with_files(
+                r#"[
+          {"projectID": 10, "fileID": 1010, "required": true},
+          {"projectID": 30, "fileID": 1030, "required": true}
+        ]"#,
+            )
+            .as_bytes(),
+        )],
+    );
+
+    initialize_from_zip_with_api(&zip_path, &out, "zh-CN", &NoDownloadUrlApi).unwrap();
+    let common = read_json_array(out.join("common.json"));
+    let server = read_json_array(out.join("server.json"));
+
+    assert_eq!(common.len(), 1);
+    assert_eq!(common[0]["project_id"], 10);
+    assert_eq!(common[0]["file_id"], 1010);
+    assert_eq!(server.len(), 1);
+    assert_eq!(server[0]["project_id"], 30);
+    assert_eq!(server[0]["file_id"], 1030);
+}
+
+#[test]
+fn init_allows_client_only_files_without_direct_download_urls() {
+    let temp = tempfile::tempdir().unwrap();
+    let zip_path = temp.path().join("pack.zip");
+    let out = temp.path().join("project");
+    support::write_zip(
+        &zip_path,
+        &[(
+            "manifest.json",
+            manifest_with_files(r#"[{"projectID": 20, "fileID": 1020, "required": true}]"#)
+                .as_bytes(),
+        )],
+    );
+
+    initialize_from_zip_with_api(&zip_path, &out, "zh-CN", &NoDownloadUrlApi).unwrap();
+
+    let client = read_json_array(out.join("client.json"));
+    assert_eq!(client.len(), 1);
+    assert_eq!(client[0]["project_id"], 20);
 }
 
 #[test]
@@ -447,6 +504,37 @@ impl CurseForgeApi for CountingApi {
             .unwrap()
             .entry(project_id)
             .or_default() += 1;
+        support::FixtureApi.list_project_files(project_id)
+    }
+}
+
+struct NoDownloadUrlApi;
+
+impl CurseForgeApi for NoDownloadUrlApi {
+    fn get_project(&self, project_id: u64) -> Result<CfProject, ResolveError> {
+        support::FixtureApi.get_project(project_id)
+    }
+
+    fn get_file(&self, project_id: u64, file_id: u64) -> Result<CfFile, ResolveError> {
+        let mut file = support::FixtureApi.get_file(project_id, file_id)?;
+        file.download_url = None;
+        Ok(file)
+    }
+
+    fn find_project_by_slug(&self, slug: &str) -> Result<CfProject, ResolveError> {
+        support::FixtureApi.find_project_by_slug(slug)
+    }
+
+    fn list_files(
+        &self,
+        project_id: u64,
+        minecraft_version: &str,
+        loader: &str,
+    ) -> Result<Vec<CfFile>, ResolveError> {
+        support::FixtureApi.list_files(project_id, minecraft_version, loader)
+    }
+
+    fn list_project_files(&self, project_id: u64) -> Result<Vec<CfFile>, ResolveError> {
         support::FixtureApi.list_project_files(project_id)
     }
 }

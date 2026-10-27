@@ -5,6 +5,45 @@ pub enum Language {
 }
 
 impl Language {
+    pub fn artifact_source_target_reused(self) -> &'static str {
+        match self {
+            Self::ZhCn => "运行目录命中",
+            Self::EnUs => "target reused",
+        }
+    }
+
+    pub fn artifact_source_cache_hit(self) -> &'static str {
+        match self {
+            Self::ZhCn => "缓存命中",
+            Self::EnUs => "cache hit",
+        }
+    }
+
+    pub fn artifact_source_downloaded(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已下载",
+            Self::EnUs => "downloaded",
+        }
+    }
+
+    pub fn runtime_install_cache_reused(self, description: &str, path: &str) -> String {
+        let description = match (self, description) {
+            (Self::ZhCn, "loader installer") => "Loader 安装器",
+            (Self::ZhCn, "loader installer checksum") => "Loader 安装器校验信息",
+            (Self::ZhCn, "Minecraft version profile") => "运行目录中的 Minecraft 版本配置",
+            (Self::ZhCn, "cached Minecraft version profile") => "Minecraft 版本配置缓存",
+            (Self::ZhCn, "Mojang version manifest") => "Mojang 版本清单缓存",
+            (Self::ZhCn, "Fabric loader profile") => "Fabric Loader 配置缓存",
+            (Self::ZhCn, "validated client loader installation") => "已验证的客户端 Loader 安装",
+            (Self::ZhCn, "validated server loader installation") => "已验证的服务端 Loader 安装",
+            (_, description) => description,
+        };
+        match self {
+            Self::ZhCn => format!("复用运行安装缓存（{description}）：{path}"),
+            Self::EnUs => format!("runtime install cache reused ({description}): {path}"),
+        }
+    }
+
     pub fn from_code(code: &str) -> Self {
         if code.eq_ignore_ascii_case("zh-CN") || code.to_ascii_lowercase().starts_with("zh") {
             Self::ZhCn
@@ -69,6 +108,13 @@ impl Language {
         }
     }
 
+    pub fn cmd_title_overrides(self) -> &'static str {
+        match self {
+            Self::ZhCn => "文件目录",
+            Self::EnUs => "File Directory",
+        }
+    }
+
     pub fn cmd_title_settings(self) -> &'static str {
         match self {
             Self::ZhCn => "设置",
@@ -125,6 +171,15 @@ impl Language {
         }
     }
 
+    pub fn cmd_desc_overrides(self) -> &'static str {
+        match self {
+            Self::ZhCn => "浏览并编辑 overrides 目录文件，调整其生效端",
+            Self::EnUs => {
+                "Browse and edit files under overrides and change which side they apply to"
+            }
+        }
+    }
+
     pub fn cmd_desc_settings(self) -> &'static str {
         match self {
             Self::ZhCn => "编辑 config.toml 项目配置",
@@ -174,6 +229,69 @@ impl Language {
         }
     }
 
+    pub fn field_build_target(self) -> &'static str {
+        match self {
+            Self::ZhCn => "构建内容",
+            Self::EnUs => "Build contents",
+        }
+    }
+
+    pub fn field_server_platform(self) -> &'static str {
+        match self {
+            Self::ZhCn => "服务端目标平台",
+            Self::EnUs => "Server target platform",
+        }
+    }
+
+    pub fn build_target_both(self) -> &'static str {
+        match self {
+            Self::ZhCn => "客户端和服务端",
+            Self::EnUs => "Client and server",
+        }
+    }
+
+    pub fn build_target_client(self) -> &'static str {
+        match self {
+            Self::ZhCn => "仅客户端",
+            Self::EnUs => "Client only",
+        }
+    }
+
+    pub fn build_target_server(self) -> &'static str {
+        match self {
+            Self::ZhCn => "仅服务端",
+            Self::EnUs => "Server only",
+        }
+    }
+
+    pub fn server_platform_current(self) -> &'static str {
+        match self {
+            Self::ZhCn => "当前系统",
+            Self::EnUs => "Current system",
+        }
+    }
+
+    pub fn server_platform_windows_x86_64(self) -> &'static str {
+        match self {
+            Self::ZhCn => "Windows x64",
+            Self::EnUs => "Windows x64",
+        }
+    }
+
+    pub fn server_platform_linux_x86_64(self) -> &'static str {
+        match self {
+            Self::ZhCn => "Linux x64",
+            Self::EnUs => "Linux x64",
+        }
+    }
+
+    pub fn server_platform_macos_aarch64(self) -> &'static str {
+        match self {
+            Self::ZhCn => "macOS Apple Silicon",
+            Self::EnUs => "macOS Apple Silicon",
+        }
+    }
+
     pub fn field_language(self) -> &'static str {
         match self {
             Self::ZhCn => "语言",
@@ -220,6 +338,41 @@ impl Language {
         match self {
             Self::ZhCn => "保存",
             Self::EnUs => "Save",
+        }
+    }
+
+    pub fn console_stop(self) -> &'static str {
+        match self {
+            Self::ZhCn => "结束运行",
+            Self::EnUs => "End run",
+        }
+    }
+
+    pub fn console_input_hint(self) -> &'static str {
+        match self {
+            Self::ZhCn => "输入命令后回车发送，例如 stop",
+            Self::EnUs => "Type a command and press Enter, for example stop",
+        }
+    }
+
+    pub fn console_send(self) -> &'static str {
+        match self {
+            Self::ZhCn => "发送",
+            Self::EnUs => "Send",
+        }
+    }
+
+    pub fn console_expand(self) -> &'static str {
+        match self {
+            Self::ZhCn => "展开",
+            Self::EnUs => "Expand",
+        }
+    }
+
+    pub fn console_collapse(self) -> &'static str {
+        match self {
+            Self::ZhCn => "收缩",
+            Self::EnUs => "Collapse",
         }
     }
 
@@ -283,6 +436,13 @@ impl Language {
         match self {
             Self::ZhCn => "请填写输出目录",
             Self::EnUs => "Output directory is required",
+        }
+    }
+
+    pub fn err_server_platform_for_client_build(self) -> &'static str {
+        match self {
+            Self::ZhCn => "仅客户端构建不能选择服务端目标平台",
+            Self::EnUs => "A client-only build cannot select a server target platform",
         }
     }
 
@@ -615,6 +775,188 @@ impl Language {
         }
     }
 
+    pub fn overrides_empty(self) -> &'static str {
+        match self {
+            Self::ZhCn => "overrides 目录为空",
+            Self::EnUs => "The overrides directory is empty",
+        }
+    }
+
+    pub fn overrides_loading(self) -> &'static str {
+        match self {
+            Self::ZhCn => "正在扫描 overrides",
+            Self::EnUs => "Scanning overrides",
+        }
+    }
+
+    pub fn overrides_loaded(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已加载文件",
+            Self::EnUs => "Files loaded",
+        }
+    }
+
+    pub fn overrides_reload(self) -> &'static str {
+        match self {
+            Self::ZhCn => "刷新",
+            Self::EnUs => "Refresh",
+        }
+    }
+
+    pub fn overrides_open(self) -> &'static str {
+        match self {
+            Self::ZhCn => "打开",
+            Self::EnUs => "Open",
+        }
+    }
+
+    pub fn overrides_filter_all(self) -> &'static str {
+        match self {
+            Self::ZhCn => "全部",
+            Self::EnUs => "All",
+        }
+    }
+
+    pub fn overrides_filter_conflicting(self) -> &'static str {
+        match self {
+            Self::ZhCn => "内容不一致",
+            Self::EnUs => "Divergent copies",
+        }
+    }
+
+    pub fn overrides_scope_missing_entry(self) -> &'static str {
+        match self {
+            Self::ZhCn => "该文件已不在列表中，请刷新后重试",
+            Self::EnUs => "That file is no longer listed; refresh and try again",
+        }
+    }
+
+    pub fn overrides_scope(self) -> &'static str {
+        match self {
+            Self::ZhCn => "生效端",
+            Self::EnUs => "Applies to",
+        }
+    }
+
+    pub fn overrides_scope_common(self) -> &'static str {
+        match self {
+            Self::ZhCn => "通用",
+            Self::EnUs => "Common",
+        }
+    }
+
+    pub fn overrides_scope_both_split(self) -> &'static str {
+        match self {
+            Self::ZhCn => "双端各一份",
+            Self::EnUs => "Both sides (separate copies)",
+        }
+    }
+
+    pub fn overrides_scope_client(self) -> &'static str {
+        match self {
+            Self::ZhCn => "仅客户端",
+            Self::EnUs => "Client only",
+        }
+    }
+
+    pub fn overrides_scope_server(self) -> &'static str {
+        match self {
+            Self::ZhCn => "仅服务端",
+            Self::EnUs => "Server only",
+        }
+    }
+
+    pub fn overrides_file_name(self) -> &'static str {
+        match self {
+            Self::ZhCn => "文件名",
+            Self::EnUs => "Name",
+        }
+    }
+
+    pub fn overrides_source_layer(self) -> &'static str {
+        match self {
+            Self::ZhCn => "当前层",
+            Self::EnUs => "Layer",
+        }
+    }
+
+    pub fn overrides_conflict_note(self) -> &'static str {
+        match self {
+            Self::ZhCn => "同名文件同时存在于通用与端侧，端侧内容覆盖通用内容",
+            Self::EnUs => "The same path exists in common and a side layer; the side layer wins",
+        }
+    }
+
+    pub fn overrides_delete(self) -> &'static str {
+        match self {
+            Self::ZhCn => "删除",
+            Self::EnUs => "Delete",
+        }
+    }
+
+    pub fn overrides_delete_confirm(self) -> &'static str {
+        match self {
+            Self::ZhCn => "确认删除",
+            Self::EnUs => "Confirm delete",
+        }
+    }
+
+    pub fn overrides_delete_cancel(self) -> &'static str {
+        match self {
+            Self::ZhCn => "取消",
+            Self::EnUs => "Cancel",
+        }
+    }
+
+    pub fn overrides_deleted(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已删除",
+            Self::EnUs => "Deleted",
+        }
+    }
+
+    pub fn overrides_delete_missing(self) -> &'static str {
+        match self {
+            Self::ZhCn => "该文件已不在列表中，请刷新后重试",
+            Self::EnUs => "That file is no longer listed; refresh and try again",
+        }
+    }
+
+    pub fn overrides_reveal(self) -> &'static str {
+        match self {
+            Self::ZhCn => "在文件管理器中定位",
+            Self::EnUs => "Reveal in file manager",
+        }
+    }
+
+    pub fn overrides_open_failed(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("打开路径失败：{error}"),
+            Self::EnUs => format!("Failed to open path: {error}"),
+        }
+    }
+
+    pub fn overrides_delete_failed(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("删除失败：{error}"),
+            Self::EnUs => format!("Delete failed: {error}"),
+        }
+    }
+
+    pub fn overrides_scan_failed(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("扫描 overrides 失败：{error}"),
+            Self::EnUs => format!("Failed to scan overrides: {error}"),
+        }
+    }
+
+    pub fn overrides_no_project(self) -> &'static str {
+        match self {
+            Self::ZhCn => "请先选择项目目录",
+            Self::EnUs => "Select a project directory first",
+        }
+    }
+
     pub fn sync_side_client(self) -> &'static str {
         match self {
             Self::ZhCn => "客户端",
@@ -623,6 +965,188 @@ impl Language {
     }
 
     pub fn sync_side_server(self) -> &'static str {
+        match self {
+            Self::ZhCn => "服务端",
+            Self::EnUs => "Server",
+        }
+    }
+
+    pub fn sync_auto_load_failed(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("无法检查待处理同步清单: {error}"),
+            Self::EnUs => format!("Failed to inspect the pending sync manifest: {error}"),
+        }
+    }
+
+    pub fn sync_tree_error(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("同步目录树无效: {error}"),
+            Self::EnUs => format!("Invalid sync directory tree: {error}"),
+        }
+    }
+
+    pub fn sync_folder_select(self, selected: usize, total: usize) -> String {
+        match self {
+            Self::ZhCn => format!("本目录新增/修改 {selected}/{total}"),
+            Self::EnUs => format!("Added/modified in folder {selected}/{total}"),
+        }
+    }
+
+    pub fn sync_folder_ignore(self) -> &'static str {
+        match self {
+            Self::ZhCn => "忽略本目录",
+            Self::EnUs => "Ignore folder",
+        }
+    }
+
+    pub fn sync_action_apply(self) -> &'static str {
+        match self {
+            Self::ZhCn => "应用",
+            Self::EnUs => "Apply",
+        }
+    }
+
+    pub fn sync_action_delete(self) -> &'static str {
+        match self {
+            Self::ZhCn => "删除源文件",
+            Self::EnUs => "Delete source",
+        }
+    }
+
+    pub fn sync_action_delete_confirm(self) -> &'static str {
+        match self {
+            Self::ZhCn => "确认同步删除",
+            Self::EnUs => "Confirm synced delete",
+        }
+    }
+
+    pub fn sync_action_delete_cancel(self) -> &'static str {
+        match self {
+            Self::ZhCn => "取消",
+            Self::EnUs => "Cancel",
+        }
+    }
+
+    pub fn sync_action_delete_confirmed(self) -> &'static str {
+        match self {
+            Self::ZhCn => "将同步删除",
+            Self::EnUs => "Will be deleted",
+        }
+    }
+
+    pub fn sync_action_delete_confirmed_hint(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已确认，应用后删除源文件；点击可撤销",
+            Self::EnUs => "Confirmed; applying removes the source file. Click to undo.",
+        }
+    }
+
+    pub fn sync_search(self) -> &'static str {
+        match self {
+            Self::ZhCn => "搜索",
+            Self::EnUs => "Search",
+        }
+    }
+
+    pub fn sync_search_hint(self) -> &'static str {
+        match self {
+            Self::ZhCn => "按路径筛选",
+            Self::EnUs => "Filter by path",
+        }
+    }
+
+    pub fn sync_search_clear(self) -> &'static str {
+        match self {
+            Self::ZhCn => "清除",
+            Self::EnUs => "Clear",
+        }
+    }
+
+    pub fn sync_no_matches(self, filter: &str) -> String {
+        match self {
+            Self::ZhCn => format!("没有匹配“{filter}”的待处理项"),
+            Self::EnUs => format!("No pending items match \"{filter}\""),
+        }
+    }
+
+    pub fn sync_action_ignore(self) -> &'static str {
+        match self {
+            Self::ZhCn => "忽略",
+            Self::EnUs => "Ignore",
+        }
+    }
+
+    pub fn sync_change_modified(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已修改",
+            Self::EnUs => "Modified",
+        }
+    }
+
+    pub fn sync_change_added(self) -> &'static str {
+        match self {
+            Self::ZhCn => "新增",
+            Self::EnUs => "Added",
+        }
+    }
+
+    pub fn sync_change_deleted(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已删除",
+            Self::EnUs => "Deleted",
+        }
+    }
+
+    pub fn sync_source_new(self) -> &'static str {
+        match self {
+            Self::ZhCn => "运行目录新增",
+            Self::EnUs => "New in run directory",
+        }
+    }
+
+    pub fn sync_source_common(self) -> &'static str {
+        match self {
+            Self::ZhCn => "通用覆盖层",
+            Self::EnUs => "Common overrides",
+        }
+    }
+
+    pub fn sync_source_client(self) -> &'static str {
+        match self {
+            Self::ZhCn => "客户端覆盖层",
+            Self::EnUs => "Client overrides",
+        }
+    }
+
+    pub fn sync_source_server(self) -> &'static str {
+        match self {
+            Self::ZhCn => "服务端覆盖层",
+            Self::EnUs => "Server overrides",
+        }
+    }
+
+    pub fn sync_source_debug(self) -> &'static str {
+        match self {
+            Self::ZhCn => "调试覆盖层（不可同步）",
+            Self::EnUs => "Debug overrides (not syncable)",
+        }
+    }
+
+    pub fn sync_target_common(self) -> &'static str {
+        match self {
+            Self::ZhCn => "通用",
+            Self::EnUs => "Common",
+        }
+    }
+
+    pub fn sync_target_client(self) -> &'static str {
+        match self {
+            Self::ZhCn => "客户端",
+            Self::EnUs => "Client",
+        }
+    }
+
+    pub fn sync_target_server(self) -> &'static str {
         match self {
             Self::ZhCn => "服务端",
             Self::EnUs => "Server",
@@ -783,6 +1307,159 @@ impl Language {
         }
     }
 
+    pub fn settings_loader_versions_loading(self) -> &'static str {
+        match self {
+            Self::ZhCn => "正在获取可用版本...",
+            Self::EnUs => "Loading available versions...",
+        }
+    }
+
+    pub fn settings_loader_versions_retry(self) -> &'static str {
+        match self {
+            Self::ZhCn => "获取失败，点击版本选择框重试。",
+            Self::EnUs => "Loading failed. Click the version selector to retry.",
+        }
+    }
+
+    pub fn settings_loader_version_select(self) -> &'static str {
+        match self {
+            Self::ZhCn => "请选择版本",
+            Self::EnUs => "Select a version",
+        }
+    }
+
+    pub fn run_test_config_section(self) -> &'static str {
+        match self {
+            Self::ZhCn => "本地运行配置",
+            Self::EnUs => "Local Run Configuration",
+        }
+    }
+
+    pub fn run_test_config_reload(self) -> &'static str {
+        match self {
+            Self::ZhCn => "重新读取",
+            Self::EnUs => "Reload",
+        }
+    }
+
+    pub fn run_test_config_loaded(self) -> &'static str {
+        match self {
+            Self::ZhCn => "已读取 test-run.toml",
+            Self::EnUs => "test-run.toml loaded",
+        }
+    }
+
+    pub fn run_player_name(self) -> &'static str {
+        match self {
+            Self::ZhCn => "离线玩家名",
+            Self::EnUs => "Offline Player Name",
+        }
+    }
+
+    pub fn run_download_source(self) -> &'static str {
+        match self {
+            Self::ZhCn => "下载源",
+            Self::EnUs => "Download Source",
+        }
+    }
+
+    pub fn run_java_version_major(self) -> &'static str {
+        match self {
+            Self::ZhCn => "Java 大版本",
+            Self::EnUs => "Java Major Version",
+        }
+    }
+
+    pub fn run_sync_interval(self) -> &'static str {
+        match self {
+            Self::ZhCn => "同步检查间隔（秒）",
+            Self::EnUs => "Sync Interval (seconds)",
+        }
+    }
+
+    pub fn run_debug_jvm_args(self) -> &'static str {
+        match self {
+            Self::ZhCn => "调试 JVM 参数",
+            Self::EnUs => "Debug JVM Arguments",
+        }
+    }
+
+    pub fn run_java_path(self) -> &'static str {
+        match self {
+            Self::ZhCn => "开发运行 Java 路径",
+            Self::EnUs => "Development Java Path",
+        }
+    }
+
+    pub fn run_sync_include_paths(self) -> &'static str {
+        match self {
+            Self::ZhCn => "同步白名单目录",
+            Self::EnUs => "Sync Include Paths",
+        }
+    }
+
+    pub fn run_sync_reload(self) -> &'static str {
+        match self {
+            Self::ZhCn => "重新读取",
+            Self::EnUs => "Reload",
+        }
+    }
+
+    pub fn run_sync_include_hint(self) -> &'static str {
+        match self {
+            Self::ZhCn => "每行一个相对目录，例如 config",
+            Self::EnUs => "One relative directory per line, for example config",
+        }
+    }
+
+    pub fn err_missing_player_name(self) -> &'static str {
+        match self {
+            Self::ZhCn => "运行客户端时必须填写离线玩家名",
+            Self::EnUs => "Offline player name is required for runClient",
+        }
+    }
+
+    pub fn err_test_run_config_not_loaded(self) -> &'static str {
+        match self {
+            Self::ZhCn => "尚未读取当前项目的 test-run.toml，请点击“重新读取”后再运行",
+            Self::EnUs => {
+                "test-run.toml has not been loaded for this project; click Reload before running"
+            }
+        }
+    }
+
+    pub fn err_test_run_config_project_mismatch(self, loaded: &str, current: &str) -> String {
+        match self {
+            Self::ZhCn => format!(
+                "本地运行配置属于项目“{loaded}”，当前项目为“{current}”；请点击“重新读取”后再运行"
+            ),
+            Self::EnUs => format!(
+                "Local run configuration belongs to '{loaded}', but the current project is '{current}'; click Reload before running"
+            ),
+        }
+    }
+
+    pub fn err_invalid_test_run_config(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("test-run.toml 配置无效：{error}"),
+            Self::EnUs => format!("Invalid test-run.toml configuration: {error}"),
+        }
+    }
+
+    pub fn err_invalid_run_sync_config(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("运行同步白名单无效：{error}"),
+            Self::EnUs => format!("Invalid run sync include paths: {error}"),
+        }
+    }
+
+    pub fn err_save_run_configuration(self, error: &str) -> String {
+        match self {
+            Self::ZhCn => format!("保存本地运行配置失败：{error}"),
+            Self::EnUs => format!("Failed to save local run configuration: {error}"),
+        }
+    }
+
     pub fn settings_label_proxy_ip(self) -> &'static str {
         match self {
             Self::ZhCn => "代理地址",
@@ -899,6 +1576,20 @@ impl Language {
         match self {
             Self::ZhCn => "跟随系统",
             Self::EnUs => "System",
+        }
+    }
+
+    pub fn lang_option_chinese(self) -> &'static str {
+        match self {
+            Self::ZhCn => "中文",
+            Self::EnUs => "Chinese",
+        }
+    }
+
+    pub fn lang_option_english(self) -> &'static str {
+        match self {
+            Self::ZhCn => "英文",
+            Self::EnUs => "English",
         }
     }
 }

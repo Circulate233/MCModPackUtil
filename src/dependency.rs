@@ -38,6 +38,23 @@ impl DependencyType {
             id => Err(DependencyError::UnsupportedClass(id)),
         }
     }
+
+    /// Returns the CurseForge web category used in project and file page URLs.
+    pub fn curseforge_web_category(&self) -> &'static str {
+        match self {
+            Self::Mod => "mc-mods",
+            Self::ResourcePack => "texture-packs",
+            Self::ShaderPack => "shaders",
+        }
+    }
+
+    /// Builds a direct, user-facing CurseForge file page URL from known project metadata.
+    pub fn curseforge_file_page_url(&self, slug: &str, file_id: u64) -> String {
+        format!(
+            "https://www.curseforge.com/minecraft/{}/{slug}/files/{file_id}",
+            self.curseforge_web_category()
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

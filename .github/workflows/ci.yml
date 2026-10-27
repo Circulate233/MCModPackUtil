@@ -1,21 +1,57 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
   workflow_dispatch:
 
 jobs:
+  version-policy:
+    runs-on: ubuntu-latest
+    outputs:
+      release-version: ${{ steps.release-version.outputs.release-version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: release-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF#refs/tags/}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            if [[ ! "${ref}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "invalid release tag: ${ref}" >&2
+              exit 1
+            fi
+            echo "release-version=${ref#v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "release-version=" >> "${GITHUB_OUTPUT}"
+          fi
+
   verify:
+    needs: version-policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - if: needs.version-policy.outputs.release-version != ''
+        shell: bash
+        run: echo "MCMODPACKUTIL_BUILD_VERSION=${{ needs.version-policy.outputs.release-version }}" >> "${GITHUB_ENV}"
+      - run: rustc --version
       - run: cargo fmt --check
-      - run: cargo clippy -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --release --no-default-features
+      - run: cargo test --locked --release
 
   release-artifacts:
+    needs: version-policy
     strategy:
       fail-fast: false
       matrix:
@@ -24,29 +60,33 @@ jobs:
             target: x86_64-pc-windows-msvc
             bin: mcmpu.exe
             exe: mcmpu.exe
-            artifact: mcmpu-0.1.0-windows-x86_64
+            artifact: windows-x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: mcmpu
             exe: mcmpu
-            artifact: mcmpu-0.1.0-linux-x86_64
+            artifact: linux-x86_64
           - os: macos-13
             target: x86_64-apple-darwin
             bin: mcmpu
             exe: mcmpu
-            artifact: mcmpu-0.1.0-macos-x86_64
+            artifact: macos-x86_64
           - os: macos-14
             target: aarch64-apple-darwin
             bin: mcmpu
             exe: mcmpu
-            artifact: mcmpu-0.1.0-macos-aarch64
+            artifact: macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          targets: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
+          fetch-depth: 0
+          fetch-tags: true
+      - if: needs.version-policy.outputs.release-version != ''
+        shell: bash
+        run: echo "MCMODPACKUTIL_BUILD_VERSION=${{ needs.version-policy.outputs.release-version }}" >> "${GITHUB_ENV}"
+      - run: rustc --version
+      - run: cargo build --locked --release --target ${{ matrix.target }}
         env:
           MCMODPACKUTIL_CURSEFORGE_API_KEY: ${{ secrets.MCMODPACKUTIL_CURSEFORGE_API_KEY }}
       - shell: bash
@@ -58,8 +98,77 @@ jobs:
             printf '%s\r\n' '@echo off' 'setlocal' 'set "MCMPU_DIR=%~dp0"' '"%MCMPU_DIR%mcmpu.exe" %*' 'exit /b %ERRORLEVEL%' > package/mcmpu.bat
           fi
       - shell: pwsh
-        run: Compress-Archive -Path package/* -DestinationPath "${{ matrix.artifact }}.zip" -CompressionLevel Optimal
-      - uses: actions/upload-artifact@v4
+        run: |
+          $version = (& "target/${{ matrix.target }}/release/${{ matrix.bin }}" --version).Split()[1]
+          if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+[0-9a-f]{7})?$') {
+            throw "unexpected built version: $version"
+          }
+          $archive = "mcmpu-$version-${{ matrix.artifact }}.zip"
+          Compress-Archive -Path package/* -DestinationPath $archive -CompressionLevel Optimal
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+        id: archive
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.zip
+          name: mcmpu-${{ steps.archive.outputs.version }}-${{ matrix.artifact }}
+          path: ${{ steps.archive.outputs.archive }}
+          retention-days: 7
+
+  release:
+    if: needs.version-policy.outputs.release-version != ''
+    needs: [version-policy, verify, release-artifacts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: mcmpu-${{ needs.version-policy.outputs.release-version }}-*
+          path: release/assets
+          merge-multiple: true
+      - shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.version-policy.outputs.release-version }}
+          RELEASE_TAG: v${{ needs.version-policy.outputs.release-version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = Get-ChildItem -LiteralPath release/assets -Filter '*.zip' -File | Sort-Object Name
+          if ($assets.Count -ne 4) { throw "expected four platform archives, found $($assets.Count)" }
+          $records = foreach ($asset in $assets) {
+            $hash = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($asset.Name)" | Set-Content -LiteralPath "$($asset.FullName).sha256" -NoNewline -Encoding utf8
+            [ordered]@{ name = $asset.Name; size = $asset.Length; sha256 = $hash }
+          }
+          $index = [ordered]@{
+            schemaVersion = 1
+            package = 'mcmpu'
+            version = $env:RELEASE_VERSION
+            tag = $env:RELEASE_TAG
+            commit = $env:RELEASE_COMMIT
+            assets = @($records)
+          }
+          $provenance = [ordered]@{
+            schemaVersion = 1
+            repository = $env:RELEASE_REPOSITORY
+            ref = "refs/tags/$($env:RELEASE_TAG)"
+            commit = $env:RELEASE_COMMIT
+            workflow = "https://github.com/$($env:RELEASE_REPOSITORY)/actions/runs/$($env:RELEASE_RUN_ID)/attempts/$($env:RELEASE_ATTEMPT)"
+            assets = @($records)
+          }
+          $index | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath release/release-index.json -Encoding utf8
+          $provenance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath release/provenance.json -Encoding utf8
+      - shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ needs.version-policy.outputs.release-version }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" release/assets/*.zip release/assets/*.zip.sha256 release/release-index.json release/provenance.json --title "$RELEASE_TAG" --generate-notes

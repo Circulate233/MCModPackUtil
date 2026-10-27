@@ -46,6 +46,199 @@ fn loads_four_manifests_grouped_by_dependency_type() {
 }
 
 #[test]
+fn missing_manifest_files_open_as_an_empty_gui_list() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let list = GuiDependencyList::load(temp.path()).unwrap();
+
+    assert!(list.entries.is_empty());
+    assert_eq!(list.contaminated_manifests().count(), 0);
+}
+
+#[test]
+fn malformed_manifest_does_not_hide_valid_entries_from_other_manifests() {
+    let temp = tempfile::tempdir().unwrap();
+    let common_path = temp.path().join("common.json");
+    let original = b"[{not valid json]".to_vec();
+    std::fs::write(&common_path, &original).unwrap();
+    support::write_entries(
+        temp.path().join("client.json"),
+        &[named_entry(
+            20,
+            1020,
+            DependencySide::Client,
+            "Client Mod",
+            DependencyType::Mod,
+        )],
+    );
+
+    let list = GuiDependencyList::load(temp.path()).unwrap();
+
+    assert_eq!(list.entries.len(), 1);
+    assert_eq!(list.entries[0].name, "Client Mod");
+    assert_eq!(list.entries[0].manifest, ManifestList::Client);
+    assert_eq!(
+        list.contaminated_manifests().collect::<Vec<_>>(),
+        [ManifestList::Common]
+    );
+
+    let error = list.save(temp.path()).unwrap_err();
+    assert!(matches!(
+        error,
+        mcmpu::gui::mod_list::ModListIoError::ContaminatedManifests { ref files }
+            if files == "common.json"
+    ));
+    assert_eq!(std::fs::read(common_path).unwrap(), original);
+}
+
+#[test]
+fn mixed_manifest_skips_invalid_entries_and_keeps_valid_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let valid = serde_json::to_value(named_entry(
+        10,
+        1010,
+        DependencySide::Common,
+        "Common Mod",
+        DependencyType::Mod,
+    ))
+    .unwrap();
+    let structurally_invalid = serde_json::json!({
+        "project_id": "not-a-number",
+        "file_id": 2020,
+        "slug": "broken",
+        "loader": "forge",
+        "type": "mod",
+        "name": "Broken Mod",
+        "required": true
+    });
+    let semantically_invalid = serde_json::json!({
+        "project_id": null,
+        "file_id": null,
+        "slug": null,
+        "loader": "forge",
+        "type": "mod",
+        "name": "Missing Locator",
+        "required": true
+    });
+    let common_path = temp.path().join("common.json");
+    let original = serde_json::to_vec_pretty(&serde_json::json!([
+        valid,
+        structurally_invalid,
+        semantically_invalid
+    ]))
+    .unwrap();
+    std::fs::write(&common_path, &original).unwrap();
+
+    let list = GuiDependencyList::load(temp.path()).unwrap();
+
+    assert_eq!(list.entries.len(), 1);
+    assert_eq!(list.entries[0].name, "Common Mod");
+    assert!(list.is_manifest_contaminated(ManifestList::Common));
+
+    assert!(matches!(
+        list.save(temp.path()).unwrap_err(),
+        mcmpu::gui::mod_list::ModListIoError::ContaminatedManifests { .. }
+    ));
+    assert_eq!(std::fs::read(common_path).unwrap(), original);
+}
+
+#[test]
+fn unknown_entry_fields_contaminate_the_manifest_and_block_save() {
+    let temp = tempfile::tempdir().unwrap();
+    let common_path = temp.path().join("common.json");
+    let valid = serde_json::to_value(named_entry(
+        10,
+        1010,
+        DependencySide::Common,
+        "Common Mod",
+        DependencyType::Mod,
+    ))
+    .unwrap();
+    let mut unsupported = serde_json::to_value(named_entry(
+        20,
+        1020,
+        DependencySide::Common,
+        "Future Mod",
+        DependencyType::Mod,
+    ))
+    .unwrap();
+    unsupported
+        .as_object_mut()
+        .unwrap()
+        .insert("future_field".to_string(), serde_json::json!(true));
+    let original = serde_json::to_vec_pretty(&serde_json::json!([valid, unsupported])).unwrap();
+    std::fs::write(&common_path, &original).unwrap();
+
+    let list = GuiDependencyList::load(temp.path()).unwrap();
+
+    assert_eq!(list.entries.len(), 1);
+    assert_eq!(list.entries[0].name, "Common Mod");
+    assert!(list.is_manifest_contaminated(ManifestList::Common));
+    assert!(matches!(
+        list.save(temp.path()).unwrap_err(),
+        mcmpu::gui::mod_list::ModListIoError::ContaminatedManifests { .. }
+    ));
+    assert_eq!(std::fs::read(common_path).unwrap(), original);
+}
+
+#[test]
+fn tolerant_loading_does_not_weaken_save_validation() {
+    let temp = tempfile::tempdir().unwrap();
+    write_mod_list_project(temp.path());
+    let common_path = temp.path().join("common.json");
+    let original = std::fs::read(&common_path).unwrap();
+    let mut list = GuiDependencyList::load(temp.path()).unwrap();
+    list.entries[0].project_id = None;
+    list.entries[0].slug = None;
+
+    let error = list.save(temp.path()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        mcmpu::gui::mod_list::ModListIoError::Validation(
+            ModListValidationError::MissingProjectLocator { index: 0 }
+        )
+    ));
+    assert_eq!(std::fs::read(common_path).unwrap(), original);
+}
+
+#[test]
+fn save_preflight_failure_leaves_all_regular_manifests_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    write_mod_list_project(temp.path());
+    let mut list = GuiDependencyList::load(temp.path()).unwrap();
+    list.entries[0].slug = Some("edited-but-not-written".to_string());
+
+    let regular_paths = ["common.json", "client.json", "server.json"];
+    let originals =
+        regular_paths.map(|file_name| std::fs::read(temp.path().join(file_name)).unwrap());
+    let resourcepacks = temp.path().join("resourcepacks.json");
+    std::fs::remove_file(&resourcepacks).unwrap();
+    std::fs::create_dir(&resourcepacks).unwrap();
+
+    let error = list.save(temp.path()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        mcmpu::gui::mod_list::ModListIoError::Transaction { .. }
+    ));
+    for (file_name, original) in regular_paths.into_iter().zip(originals) {
+        assert_eq!(
+            std::fs::read(temp.path().join(file_name)).unwrap(),
+            original
+        );
+    }
+    assert!(resourcepacks.is_dir());
+    let transaction_artifacts = std::fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with('.') && (name.ends_with(".tmp") || name.ends_with(".bak")))
+        .collect::<Vec<_>>();
+    assert!(transaction_artifacts.is_empty());
+}
+
+#[test]
 fn saves_entries_back_to_their_manifest_files_as_pretty_json() {
     let temp = tempfile::tempdir().unwrap();
     write_mod_list_project(temp.path());

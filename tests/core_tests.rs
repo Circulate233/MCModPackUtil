@@ -1,16 +1,58 @@
-use std::collections::BTreeSet;
-
-use mcmpu::config::{Config, LoaderKind};
+use mcmpu::config::{Config, LoaderKind, TestRunConfig};
 use mcmpu::curseforge::model::{CfFile, CfProject, FileDependency, ReleaseType, SideSupport};
 use mcmpu::dependency::{DependencyEntry, DependencySide, DependencyType};
 use mcmpu::manifest::curseforge_pack::ImportedManifest;
 use mcmpu::manifest::generated::{generate_modlist_html, generate_pack_manifest};
-use mcmpu::server::files::{ServerFile, ServerFilesManifest, ServerJavaConfig};
-use mcmpu::server::loader::{LoaderInstallerPlan, plan_loader_install};
-use mcmpu::server::scripts::{render_start_bat, render_start_sh};
+use mcmpu::server::files::{ServerJavaConfig, ServerMemoryError, memory_mebibytes};
+use mcmpu::server::loader::{LoaderOutput, plan_server_install_loader};
 use mcmpu::zip::optimize::minify_json_bytes;
+use std::collections::BTreeSet;
 
 mod support;
+
+#[test]
+fn test_run_config_is_stored_separately_from_build_config() {
+    let mut config = support::sample_config();
+    config.test_run.player_name = "LocalPlayer".to_string();
+    let serialized = toml::to_string_pretty(&config).unwrap();
+    let round_trip: Config = toml::from_str(&serialized).unwrap();
+
+    assert!(!serialized.contains("testRun"));
+    assert_eq!(round_trip.test_run, TestRunConfig::default());
+}
+
+#[test]
+fn main_config_rejects_legacy_test_run_section() {
+    let serialized = toml::to_string_pretty(&support::sample_config()).unwrap();
+    let invalid = format!("{serialized}\n[testRun]\nplayer_name = \"Legacy\"\n");
+
+    let error = toml::from_str::<Config>(&invalid).unwrap_err();
+
+    assert!(error.to_string().contains("unknown field `testRun`"));
+}
+
+#[test]
+fn strict_config_loading_rejects_a_missing_project_java_major_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut value = toml::Value::try_from(support::sample_config()).unwrap();
+    value
+        .get_mut("java")
+        .and_then(toml::Value::as_table_mut)
+        .unwrap()
+        .remove("version_major");
+    std::fs::write(
+        temp.path().join("config.toml"),
+        toml::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
+
+    let error = Config::from_path(temp.path().join("config.toml")).unwrap_err();
+
+    assert!(matches!(
+        error,
+        mcmpu::config::ConfigError::MissingJavaVersion
+    ));
+}
 
 #[test]
 fn rejects_placeholder_manifest_version() {
@@ -51,7 +93,7 @@ fn cleanroom_pack_name_generates_cleanroom_config() {
     }"#;
     let manifest = ImportedManifest::from_slice(raw.as_bytes()).unwrap();
 
-    let config = Config::from_imported_manifest(&manifest, "zh-CN".to_string());
+    let config = Config::from_imported_manifest(&manifest, "zh-CN".to_string()).unwrap();
 
     assert_eq!(config.pack.loader, LoaderKind::Cleanroom);
     assert_eq!(config.pack.loader_version, "1.0.0");
@@ -240,6 +282,18 @@ fn cf_project_type_maps_resource_and_shader_packs() {
         DependencyType::from_curseforge_class(shader_project.class_id).unwrap(),
         DependencyType::ShaderPack
     );
+    assert_eq!(
+        DependencyType::Mod.curseforge_file_page_url("onlyoneitem", 8_412_719),
+        "https://www.curseforge.com/minecraft/mc-mods/onlyoneitem/files/8412719"
+    );
+    assert_eq!(
+        DependencyType::ResourcePack.curseforge_file_page_url("faithful", 123),
+        "https://www.curseforge.com/minecraft/texture-packs/faithful/files/123"
+    );
+    assert_eq!(
+        DependencyType::ShaderPack.curseforge_file_page_url("complementary", 456),
+        "https://www.curseforge.com/minecraft/shaders/complementary/files/456"
+    );
 }
 
 #[test]
@@ -266,7 +320,9 @@ fn generated_modlist_escapes_project_names_and_authors() {
 
 #[test]
 fn generated_client_manifest_uses_locked_file_coordinates() {
-    let config = support::sample_config();
+    let mut config = support::sample_config();
+    config.pack.loader_version = "0.6.2-alpha".to_string();
+    config.pack.forge_compat_version = Some("14.23.5.2860".to_string());
     let entries = vec![DependencyEntry {
         project_id: Some(873867),
         file_id: Some(6147102),
@@ -285,6 +341,10 @@ fn generated_client_manifest_uses_locked_file_coordinates() {
     assert_eq!(manifest["files"][0]["projectID"], 873867);
     assert_eq!(manifest["files"][0]["fileID"], 6147102);
     assert_eq!(manifest["minecraft"]["version"], "1.12.2");
+    assert_eq!(
+        manifest["minecraft"]["modLoaders"][0]["id"],
+        "forge-14.23.5.2860"
+    );
 }
 
 #[test]
@@ -303,174 +363,6 @@ fn minify_json_preserves_string_content() {
 fn minify_json_keeps_empty_placeholder_files() {
     assert_eq!(minify_json_bytes(b"").unwrap(), b"");
     assert_eq!(minify_json_bytes(b"  \r\n\t").unwrap(), b"  \r\n\t");
-}
-
-#[test]
-fn server_scripts_include_download_verification_without_eula_prompt() {
-    let manifest = ServerFilesManifest {
-        language: "en-US".to_string(),
-        curseforge_api_key: "test-key".to_string(),
-        java: sample_server_java(),
-        files: vec![ServerFile {
-            path: "mods/example.jar".to_string(),
-            url: "https://edge.forgecdn.net/files/1/2/example.jar".to_string(),
-            sha1: "0123456789abcdef0123456789abcdef01234567".to_string(),
-            size: 12,
-        }],
-        loader: LoaderInstallerPlan::Forge {
-            installer_url: "https://maven.minecraftforge.net/forge-installer.jar".to_string(),
-            installer_sha1: None,
-        },
-    };
-
-    let bat = render_start_bat(&manifest);
-    let sh = render_start_sh(&manifest);
-
-    assert!(mcmpu::server::scripts::render_download_ps1().contains("Get-FileHash"));
-    assert!(!bat.contains("eula=true"));
-    assert!(!bat.contains("set /p ACCEPT"));
-    assert!(bat.contains("SERVER_JAR"));
-    assert!(bat.contains("call :download_file"));
-    assert!(bat.contains("pause"));
-    assert!(bat.contains("setlocal DisableDelayedExpansion"));
-    assert!(!bat.contains("enabledelayedexpansion"));
-    assert!(sh.contains("sha1sum"));
-    assert!(!sh.contains("eula=true"));
-    assert!(!sh.contains("read ACCEPT"));
-    assert!(sh.contains("fabric-server-launch.jar"));
-}
-
-#[test]
-fn server_scripts_leave_eula_to_minecraft_server() {
-    let manifest = ServerFilesManifest {
-        language: "zh-CN".to_string(),
-        curseforge_api_key: "test-key".to_string(),
-        java: sample_server_java(),
-        files: Vec::new(),
-        loader: LoaderInstallerPlan::Forge {
-            installer_url: "https://maven.minecraftforge.net/forge-installer.jar".to_string(),
-            installer_sha1: None,
-        },
-    };
-
-    let sh = render_start_sh(&manifest);
-    let bat = render_start_bat(&manifest);
-
-    assert!(!bat.contains("MinecraftEULA"));
-    assert!(!bat.contains("Type yes"));
-    assert!(!sh.contains("Please read https://aka.ms/MinecraftEULA"));
-    assert!(!sh.contains("Type yes to accept the Minecraft EULA"));
-    assert!(!sh.contains("请阅读"));
-    assert!(!sh.contains("输入 yes"));
-}
-
-#[test]
-fn server_scripts_require_java_placeholder_and_use_memory_extra_args() {
-    let manifest = ServerFilesManifest {
-        language: "en-US".to_string(),
-        curseforge_api_key: "test-key".to_string(),
-        java: ServerJavaConfig {
-            min_memory: "4G".to_string(),
-            max_memory: "8G".to_string(),
-            extra_args: vec!["-XX:+UseG1GC".to_string(), "-Dfoo=bar".to_string()],
-        },
-        files: Vec::new(),
-        loader: LoaderInstallerPlan::Forge {
-            installer_url: "https://maven.minecraftforge.net/forge-installer.jar".to_string(),
-            installer_sha1: None,
-        },
-    };
-
-    let bat = render_start_bat(&manifest);
-    let sh = render_start_sh(&manifest);
-
-    assert!(bat.contains("set \"JAVA_EXE=CHANGE_ME_JAVA_PATH\""));
-    assert!(bat.contains("\"%JAVA_EXE%\" -Xms4G -Xmx8G -XX:+UseG1GC -Dfoo=bar -jar"));
-    assert!(sh.contains("JAVA_EXE=\"CHANGE_ME_JAVA_PATH\""));
-    assert!(sh.contains("\"$JAVA_EXE\" -Xms4G -Xmx8G -XX:+UseG1GC -Dfoo=bar -jar"));
-}
-
-#[test]
-fn server_bat_pauses_on_failures_when_double_clicked() {
-    let manifest = ServerFilesManifest {
-        language: "en-US".to_string(),
-        curseforge_api_key: "test-key".to_string(),
-        java: ServerJavaConfig {
-            min_memory: "4G".to_string(),
-            max_memory: "8G".to_string(),
-            extra_args: Vec::new(),
-        },
-        files: Vec::new(),
-        loader: LoaderInstallerPlan::Forge {
-            installer_url: "https://maven.minecraftforge.net/forge-installer.jar".to_string(),
-            installer_sha1: None,
-        },
-    };
-
-    let bat = render_start_bat(&manifest);
-    let sh = render_start_sh(&manifest);
-
-    assert!(bat.contains(":fail"));
-    assert!(bat.contains("pause"));
-    assert!(bat.contains("exit /b 1"));
-    assert!(bat.contains("JAVA path is not configured"));
-    assert!(bat.contains("CHANGE_ME_JAVA_PATH"));
-    assert!(sh.contains("JAVA path is not configured"));
-    assert!(sh.contains("CHANGE_ME_JAVA_PATH"));
-}
-
-#[test]
-fn server_download_helper_uses_api_key_header_and_sha1_verification() {
-    let manifest = ServerFilesManifest {
-        language: "en-US".to_string(),
-        curseforge_api_key: "test-key".to_string(),
-        java: sample_server_java(),
-        files: vec![ServerFile {
-            path: "mods/!red-core-873867-6147102.jar".to_string(),
-            url: "https://edge.forgecdn.net/files/6147/102/!Red-Core.jar".to_string(),
-            sha1: "0123456789abcdef0123456789abcdef01234567".to_string(),
-            size: 12,
-        }],
-        loader: LoaderInstallerPlan::Forge {
-            installer_url: "https://maven.minecraftforge.net/forge-installer.jar".to_string(),
-            installer_sha1: None,
-        },
-    };
-
-    let bat = render_start_bat(&manifest);
-    let sh = render_start_sh(&manifest);
-    let helper = mcmpu::server::scripts::render_download_ps1();
-
-    assert!(bat.contains("set \"CF_API_KEY=test-key\""));
-    assert!(bat.contains("call :download_file \"mods/!red-core-873867-6147102.jar\""));
-    assert!(bat.contains("-File \"%~dp0mcmpu-download.ps1\""));
-    assert!(helper.contains("Invoke-WebRequest"));
-    assert!(helper.contains("\"x-api-key\" = $ApiKey"));
-    assert!(helper.contains("Get-FileHash"));
-    assert!(helper.contains("New-Item -ItemType Directory"));
-    assert!(sh.contains("CF_API_KEY='test-key'"));
-    assert!(sh.contains("curl -L -H \"x-api-key: $CF_API_KEY\""));
-    assert!(sh.contains("wget --header=\"x-api-key: $CF_API_KEY\""));
-}
-
-#[test]
-fn loader_install_plans_cover_supported_loaders() {
-    assert!(matches!(
-        plan_loader_install(&LoaderKind::Forge, "1.20.1", "47.4.0").unwrap(),
-        LoaderInstallerPlan::Forge { .. }
-    ));
-    assert!(matches!(
-        plan_loader_install(&LoaderKind::Fabric, "1.20.1", "0.16.14").unwrap(),
-        LoaderInstallerPlan::Fabric { .. }
-    ));
-    assert!(matches!(
-        plan_loader_install(&LoaderKind::NeoForge, "1.21.1", "21.1.190").unwrap(),
-        LoaderInstallerPlan::NeoForge { .. }
-    ));
-    assert!(matches!(
-        plan_loader_install(&LoaderKind::Cleanroom, "1.12.2", "0.3.0-alpha").unwrap(),
-        LoaderInstallerPlan::Cleanroom { .. }
-    ));
 }
 
 #[test]
@@ -499,10 +391,106 @@ fn required_dependency_report_detects_missing_projects() {
     assert_eq!(missing, vec![419286]);
 }
 
-fn sample_server_java() -> ServerJavaConfig {
-    ServerJavaConfig {
+#[test]
+fn server_memory_converts_exact_java_units_and_splits_jvm_arguments() {
+    let memory = mcmpu::config::JavaMemoryConfig {
+        min_memory: "1048576K".to_string(),
+        max_memory: "4g".to_string(),
+        extra_args: vec!["-XX:+UseG1GC -Dmode=server".to_string()],
+    };
+
+    let java = ServerJavaConfig::from_memory_config(17, &memory).unwrap();
+
+    assert_eq!(java.major, 17);
+    assert_eq!(java.min_memory_mb, 1024);
+    assert_eq!(java.max_memory_mb, 4096);
+    assert_eq!(java.jvm_args, vec!["-XX:+UseG1GC", "-Dmode=server"]);
+    assert_eq!(java.server_args, vec!["nogui"]);
+}
+
+#[test]
+fn server_memory_rejects_fractional_zero_overflow_and_inverted_values() {
+    assert!(matches!(
+        memory_mebibytes("memory", "1K"),
+        Err(ServerMemoryError::FractionalMebibyte { .. })
+    ));
+    assert!(matches!(
+        memory_mebibytes("memory", "0M"),
+        Err(ServerMemoryError::InvalidFormat { .. })
+    ));
+    assert!(matches!(
+        memory_mebibytes("memory", "4194304G"),
+        Err(ServerMemoryError::Overflow { .. })
+    ));
+
+    let memory = mcmpu::config::JavaMemoryConfig {
         min_memory: "2G".to_string(),
-        max_memory: "4G".to_string(),
+        max_memory: "1024M".to_string(),
         extra_args: Vec::new(),
-    }
+    };
+    assert!(matches!(
+        ServerJavaConfig::from_memory_config(8, &memory),
+        Err(ServerMemoryError::InvertedRange { .. })
+    ));
+}
+
+#[test]
+fn server_install_loader_plans_cover_all_outputs() {
+    let fabric = plan_server_install_loader(&LoaderKind::Fabric, "1.20.1", "0.16.14").unwrap();
+    assert_eq!(
+        fabric.output,
+        LoaderOutput::ExactJar {
+            path: "fabric-server-launch.jar".to_string(),
+            main_class: Some(
+                "net.fabricmc.loader.impl.launch.server.FabricServerLauncher".to_string()
+            ),
+        }
+    );
+    assert_eq!(
+        fabric.installer.sha1_sidecar,
+        format!("{}.sha1", fabric.installer.url)
+    );
+
+    let neoforge = plan_server_install_loader(&LoaderKind::NeoForge, "1.21.1", "21.1.190").unwrap();
+    assert_eq!(
+        neoforge.output,
+        LoaderOutput::ModernArgs {
+            windows: "libraries/net/neoforged/neoforge/21.1.190/win_args.txt".to_string(),
+            unix: "libraries/net/neoforged/neoforge/21.1.190/unix_args.txt".to_string(),
+        }
+    );
+
+    let cleanroom =
+        plan_server_install_loader(&LoaderKind::Cleanroom, "1.12.2", "0.3.16-alpha").unwrap();
+    assert_eq!(
+        cleanroom.output,
+        LoaderOutput::ExactJar {
+            path: "cleanroom-0.3.16-alpha.jar".to_string(),
+            main_class: None,
+        }
+    );
+
+    let legacy_forge = plan_server_install_loader(&LoaderKind::Forge, "1.16.5", "36.2.42").unwrap();
+    assert_eq!(
+        legacy_forge.output,
+        LoaderOutput::ExactJar {
+            path: "forge-1.16.5-36.2.42.jar".to_string(),
+            main_class: None,
+        }
+    );
+
+    let modern_forge = plan_server_install_loader(&LoaderKind::Forge, "1.17", "37.1.1").unwrap();
+    assert_eq!(
+        modern_forge.output,
+        LoaderOutput::ModernArgs {
+            windows: "libraries/net/minecraftforge/forge/1.17-37.1.1/win_args.txt".to_string(),
+            unix: "libraries/net/minecraftforge/forge/1.17-37.1.1/unix_args.txt".to_string(),
+        }
+    );
+}
+
+#[test]
+fn server_install_forge_rejects_non_numeric_minecraft_versions() {
+    let error = plan_server_install_loader(&LoaderKind::Forge, "1.20-pre1", "47.0.0").unwrap_err();
+    assert!(error.to_string().contains("numeric components"));
 }

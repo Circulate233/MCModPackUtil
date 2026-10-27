@@ -67,46 +67,53 @@
   - 读取 config 和四个依赖清单。
   - 解析 slug/project/file 坐标并锁定最终 project/file。
   - 自动补缺 Cleanroom relauncher/fugue/Scalar，并尊重用户已有版本。
-  - 校验 required dependency、download URL 和 SHA1。
+  - 校验 required dependency 和 SHA1；服务端缺失 download URL 的文件写为 manual 下载项。
   - 输出 CurseForge 客户端导入 zip。
-  - 输出可运行服务端 zip，包含 `server-files.json`、`start.bat`、`start.sh`、`mcmpu-download.ps1`、展开后的 overrides 文件、resourcepacks 占位目录和顶层文档文件。
+  - 服务端构建目标拆分正在实施：`server` 与 `both` 将输出一个按选定平台命名、只含匹配 MCServerDownloadTool 安装器的服务端 zip；`client` 不解析服务端依赖或准备安装器。
   - 构建时 minify JSON，PNG 使用 Rust 内置无损压缩。
-- `start.sh` 支持 Linux `sha1sum` 和 macOS `shasum -a 1`。
-- 启动脚本安装 loader 后会自动定位 `server.jar`、`fabric-server-launch.jar`、`forge-*.jar`、`neoforge-*.jar`、`cleanroom-*.jar`、`minecraft_server*.jar`。
+- 服务端包中的 `overrides/common` 先展开，`overrides/server` 后展开并覆盖同路径文件；产物根目录不保留额外 `overrides/` 包裹层。
+- 服务端构建会查询 GitHub Releases API，按 SemVer 选择最高稳定 `v` 前缀 tag，并完整校验 Release 元数据与三平台 index 契约；随后仅下载、缓存和嵌入所选目标平台资产。缓存按 `.mcmpu/cache/server-installer/<tag>` 隔离，同 tag 并发复用，新 tag 使用新缓存。
+- MCServerDownloadTool 负责 Java 发现与选择、并发下载、manual 缺失文件报告、loader 安装与产物验证、当前系统纯启动脚本生成和幂等修复。
 - CLI 已接入 `build` 子命令。
 - 实现 `mcmpu check` 项目 dry-run 校验：
   - 读取四个依赖清单。
   - 解析并锁定依赖。
-  - 校验 required dependency、download URL、SHA1 和 loader 安装计划。
+  - 校验 required dependency、SHA1 和 loader 安装计划；服务端缺失 download URL 不阻止检查。
   - 不写入 dist zip。
 - 构建和检查阶段的依赖解析使用并行迭代。
-- build 写 zip 时，普通文件使用流式拷贝；JSON/PNG 按单文件读入并优化。
+- build 会为实际选择的客户端和/或服务端生成安全 entry 表，拒绝链接/reparse、非普通文件、跨平台路径冲突、`runtime/**` 与安装器保留路径，并限制每包 100,000 项、单文件 8 GiB、总未压缩 16 GiB。
+- 普通文件流式写入；128 MiB 以内 JSON/PNG 保留优化，超出后流式处理。两包写入同目录临时文件并 flush/sync 后成对事务发布，第二包失败会回滚上一对产物。
+- 服务端安装器缓存具有同进程等待和跨进程文件锁；安装器以路径模型返回，Stored ZIP 从同一打开句柄流式复制并校验 size/SHA-256，不再将约 21 MB 资产读入常驻内存。
 - init 解析 CurseForge project/file 元数据时使用并行迭代，并通过 stderr 输出阶段日志和已完成解析数量。
-- 网络代理可通过全局 `--proxy <url>` 或 `config.toml` 的 `[network].proxy_ip` + `[network].proxy_port` 配置；为空时不强制代理。
+- 网络代理可通过全局 `--proxy <url>` 或 `config.toml` 的 `[network].proxy_ip` + `[network].proxy_port` 配置；未显式配置时依次读取大小写环境变量、Windows 当前用户静态系统代理或 PAC/WPAD，最终回退直连。
 - 语言检测读取 `LC_ALL`、`LC_MESSAGES`、`LANGUAGE`、`LANG`，再回退系统 locale。
-- `config.toml` 新增 `[java.client]` 与 `[java.server]` 内存/JVM 参数配置；build 服务端脚本使用 `[java.server]`，runClient/runServer 分别使用对应端侧配置并追加 `[testRun].debug_extra_jvm_args`。
-- 服务端启动脚本 Java 路径使用 `CHANGE_ME_JAVA_PATH` 占位符，未替换时显式报错退出。
+- `config.toml` 保留 `[java.client]` 与 `[java.server]` 内存/JVM 参数配置；本地运行参数迁移到项目根目录且由 Git 忽略的 `test-run.toml`，不进入构建配置。
+- GUI“设置”页只编辑 `config.toml`；`runClient` / `runServer` 表单编辑项目根目录的 `test-run.toml`，并在启动前保存。`player_name` 仅在客户端表单显示。
+- GUI 性能检查开关只影响当前一次运行，每次默认开启，不持久化到 `config.toml` 或 `test-run.toml`。
+- 服务端要求的 Java 大版本来自 `[java].version_major`，内存与额外 JVM 参数来自 `[java.server]`，均写入 `server-install.json`；安装器验证并记录用户选择的 Java。
+- 服务端 manifest 的 Forge/NeoForge/Cleanroom/Fabric loader installer 使用同源 Maven `.sha1` 边车信息，安装器校验后执行并验证精确输出产物。
 - CLI help 使用中英双语描述；init/build/check 报告按 `language` 输出基础本地化文案。
 - `--lang` 和 `--curseforge-api-key` 支持放在子命令前或子命令后。
-- 本地化只用于 `mcmpu` 终端输出；服务端启动脚本运行文案固定英文，EULA 由 Minecraft 服务端自身处理。
-- build 服务端包使用 CurseForge `download_url` 和 `x-api-key` header 下载文件；CurseMaven 仅用于 `runClient` / `runServer` 本地运行目录。
+- `mcmpu` 与 MCServerDownloadTool 都提供中英终端文案；生成的服务端启动脚本只负责启动。EULA 由 Minecraft 服务端自身处理。
+- build 服务端包的 automatic 项使用 ForgeCDN 和 `x-api-key` header，manual 项由安装器聚合校验并提供文件页；CurseMaven 仅用于本地 `runClient` / `runServer` 开发流程。
 - CLI 已接入 `runClient` / `runServer` 命令，并保留 `run-client` / `run-server` alias；命令按 build/check 相同规则读取 `config.toml`、CurseForge API key 和 proxy 后调用 run 模块入口。
-- README 和设计文档已补充 `runClient` / `runServer`、`[testRun]`、`debug/` 运行目录文件和 CurseMaven 命名规则。
+- README 和设计文档已补充 `runClient` / `runServer`、本地调试配置、`debug/` 运行目录文件和 CurseMaven 开发下载边界。
 - 实现 `mcmpu runClient` / `mcmpu runServer` 本地运行路径：
   - 重建 `mods`、`resourcepacks`、`shaderpacks`、`libraries`、`versions`、`assets` 生成目录。
   - 保留存档、日志、截图等运行数据。
-  - 复制 `overrides/common`、端侧 overrides、`debug/common` 和端侧 debug。
+  - 分两个阶段复制 overrides 与独立的 runtime-only `debug/` 层；debug 不属于 overrides，且不参与构建或同步回写。
   - 生成 `.mcmpu-sync.toml`、`.mcmpu-run-files.json` 与 `.mcmpu-run-sources.json`。
-  - 运行时文件使用 CurseMaven URL 和 `<sort-prefix><slug>-<project_id>-<file_id>.<extension>` 落盘命名。
+  - 运行时文件使用仅供本地开发的 CurseMaven 路径和 `<sort-prefix><slug>-<project_id>-<file_id>.<extension>` 落盘命名。
   - `.mcmpu/cache` 命中时校验 size/SHA1；损坏或缺失时重新下载。
-  - runtime 解析不依赖 CurseForge `downloadUrl`，避免第三方下载禁用影响 run 文件下载。
+  - runtime 解析不依赖 CurseForge `downloadUrl` 字段，使用项目与文件坐标构造 CurseMaven 开发下载地址。
   - Cleanroom runtime 路径不注入 Cleanroom relauncher 变体，仍保留 Fugue/Scalar 等非 relauncher 补缺规则。
-  - 支持 `[testRun].java_path`、PATH、常见系统路径、项目 `.mcmpu/java/<major>/` 的 Java 查找顺序。
+  - 支持本地调试配置的 `java_path`、PATH、常见系统路径、项目 `.mcmpu/java/<major>/` 的 Java 查找顺序。
   - 提供 Zulu Java 下载落盘入口 `.mcmpu/java/<major>/zulu.zip`。
   - 客户端启动命令包含离线用户名、稳定离线 UUID 和固定 offline access token。
   - 服务端启动命令使用 `java -jar server.jar nogui`。
 - Java 进程结束后不再自动写回 overrides；工具会扫描新增、修改、删除并写入 `.mcmpu/pending-sync-client.json` 或 `.mcmpu/pending-sync-server.json`。
-- GUI 新增“同步处理”页面，可加载 pending 清单，勾选条目、调整目标端侧，并手动应用到 `overrides/common`、`overrides/client` 或 `overrides/server`。
+- GUI 的 `runClient` / `runServer` 表单分别编辑 `run/client/.mcmpu-sync.toml` 与 `run/server/.mcmpu-sync.toml` 的同步白名单。
+- GUI 使用独立“同步处理”窗口加载 pending 清单，勾选条目、调整目标端侧，并手动应用到 `overrides/common`、`overrides/client` 或 `overrides/server`；该操作不放入设置页或运行表单。
 - run 同步来源规则：
   - `common` 是保底层，端侧 overrides 覆盖 common。
   - `debug/` 来源永远不进入同步清单。
@@ -114,7 +121,7 @@
 - 新增 GUI 命令执行器：
   - 无参数启动 `mcmpu` 时打开 GUI；带参数时保持 CLI。
   - `mcmpu gui` 显式打开 GUI。
-  - GUI 左侧选择 `init`、`Mod 列表`、`同步处理`、`build`、`check`、`runClient`、`runServer`。
+  - GUI 左侧选择 `init`、`Mod 列表`、`build`、`check`、`runClient`、`runServer` 和“设置”；pending-sync 通过独立“同步处理”窗口处理。
   - 右侧按命令显示 project dir、pack zip、output dir、language、proxy 等参数输入。
   - 文件/目录选择使用原生对话框。
   - GUI 通过当前 exe 启动子进程执行同一 CLI 命令。
@@ -167,7 +174,6 @@
 - `src/server/mod.rs`
 - `src/server/files.rs`
 - `src/server/loader.rs`
-- `src/server/scripts.rs`
 - `src/zip/mod.rs`
 - `src/zip/optimize.rs`
 - `tests/core_tests.rs`
@@ -263,31 +269,34 @@ target/dist/mcmpu-0.1.0-windows-x86_64.zip
 - `modlist.html` 转义项目名和作者名。
 - 客户端 manifest 使用锁定的 `project_id + file_id`。
 - JSON minify 保持字符串内容。
-- 服务端脚本包含下载校验，不提示或写入 EULA。
+- `server-install.json` 与安装器流程覆盖下载校验；生成的纯启动脚本不下载，且不提示或写入 EULA。
 - Forge、Fabric、NeoForge、Cleanroom loader 安装计划。
 - required dependency 缺失检测。
 
 ## 下一步
 1. 使用真实 CurseForge API key 对真实整合包执行人工验收：
    - `mcmpu init <curseforge-pack.zip>`
-   - `mcmpu build`
+   - 验收独立构建：`mcmpu build --target client`、`mcmpu build --target server --server-platform windows-x86_64` 和默认 `mcmpu build`。
 2. 如需发布三平台二进制，运行 GitHub Actions `CI` workflow 并下载四个 artifact。
 
 ## 风险与决策
 - 用户明确要求直接在主仓库工作，后续使用主仓库路径 `F:\new\MCModPackUtil`。
 - 当前第一批测试聚焦离线核心逻辑，网络解析和完整 zip 构建将在后续测试中补齐。
-- 服务端包策略已锁定为可运行服务器目录包，包含原生 bat/sh 下载脚本。
+- 服务端包策略正在迁移为单平台安装目录包：服务端 ZIP 仅含数据 manifest 与构建时解析到的目标平台安装器，不预制下载脚本。默认构建保持 `both + current`。
 - API key 不写入配置；运行解析类命令按 CLI、运行时环境变量、官方构建内置 key 读取，仍为空时直接报错。
 - `LoaderKind::Cleanroom` 当前生成客户端 manifest loader 名称为 `forge`，符合 Cleanroom 对 CurseForge 1.12.2 Forge 兼容包的导入语义。
 - `DependencyResolver` 当前依赖 `CurseForgeApi` trait，测试使用内存 fake，真实 HTTP client 可以独立接入。
 - `CurseForgeClient` 当前已实现 project、file、slug search、file list 的基础 API 调用和 JSON 映射。
 - `mcmpu check` 当前做项目 dry-run 校验，会解析依赖但不写 zip。
 - CLI 当前暴露 `check`、`init`、`build`、`runClient`、`runServer` 和 `gui` 命令。
+- CLI Ctrl+C 已接入运行监督：服务端发送 `stop` 并在 10 秒后必要时强制终止，客户端直接终止；两端都会继续生成 pending-sync 清单。
 - `initialize_from_zip` 覆盖空依赖 manifest 的离线初始化；非空 manifest 需要 API key 并走 CurseForge 元数据拆分。
+- 非空 manifest 初始化会解析 CurseForge 项目与文件元数据，但不会因缺失 `download_url` 失败。服务端 build 将缺失 URL 的文件写入 `server-install.json` 的 manual 项并保留 CurseForge 文件页；MCServerDownloadTool 先处理 automatic 项，再聚合报告所有缺失或 SHA1 不符的 manual 项，补齐后重跑才继续 loader 安装。发布构建不推导 CDN 路径，也不使用 CurseMaven；CurseMaven 仅限本地 `runClient` / `runServer` 开发流程。
 - 测试样例数据必须保留在 `tests/`，生产代码禁止出现参考整合包名称、作者、版本等硬编码。
 - `mcmpu init <zip> --output <dir>` 当前可生成项目结构，并可用 CurseForge 元数据并行解析 manifest files。
 - Cleanroom 自动追加依赖属于 mod 表构建规则，坐标集中放在专用模块，避免散落硬编码。
-- Cleanroom relauncher、fugue、Scalar 只在 build/check 路径补缺，并走 CurseForge resolver 锁定最新文件和校验 download URL。
+- Cleanroom relauncher、fugue、Scalar 只在 build/check 路径补缺，并走 CurseForge resolver 锁定最新文件和校验文件元数据。
+- Cleanroom 客户端 build/check 已按最终 resolved 条目严格识别唯一 Relauncher：Original/Improved 生成结构化 `config/relauncher.json`；Unofficial 生成启用 `Use Local MMC Pack` 的完整 Forge CFG，从 Cleanroom Maven 下载并校验原始 MMC ZIP，复用 `.mcmpu/cache/cleanroom/` 后以 Stored 原样写入客户端 `overrides/cleanroom/`。参数来自 `[java.client]`，每个 `extra_args` 元素按普通空白规范化；build 不验证具体 JVM 参数兼容性，但重复覆盖 `-Xms`/`-Xmx` 仍会失败。服务端不生成这些文件。
 - 实网 API key 可用于临时手动验证，但不得写入测试、文档、配置或日志；当前测试继续优先使用 fake API，避免外网和密钥泄露风险。
-- 构建实现采用流式 zip writer；普通文件流式拷贝，JSON/PNG 优化按单文件处理，避免整包常驻内存。
+- 构建实现采用流式 zip writer；普通文件流式拷贝，JSON/PNG 仅在单文件不超过 128 MiB 时优化，避免整包或超大单文件常驻内存。
 - init/build/check 依赖解析使用 Rayon 并行迭代；zip 写入保持顺序，避免压缩包结构竞争。

@@ -21,10 +21,16 @@ pub enum ResolveError {
         "only alpha CurseForge file candidates were found; specify file_id explicitly to use alpha files"
     )]
     AlphaRequiresExplicitFileId,
-    #[error("CurseForge file {project_id}/{file_id} has no download URL")]
-    MissingDownloadUrl { project_id: u64, file_id: u64 },
+    #[error("CurseForge file {project_id}/{file_id} has no download URL. Open {project_page_url}")]
+    MissingDownloadUrl {
+        project_id: u64,
+        file_id: u64,
+        project_page_url: String,
+    },
     #[error("CurseForge API error: {0}")]
     Api(String),
+    #[error("CurseForge cache error at '{path}': {message}")]
+    Cache { path: String, message: String },
 }
 
 pub struct ApiKeyResolver;
@@ -92,14 +98,14 @@ fn read_env_var(name: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn read_windows_environment_variable(name: &str, scope: &str) -> Option<String> {
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("[Environment]::GetEnvironmentVariable('{name}', '{scope}')"),
-        ])
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-Command",
+        &format!("[Environment]::GetEnvironmentVariable('{name}', '{scope}')"),
+    ]);
+    crate::project::process::configure_console_window(&mut command, true);
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -242,7 +248,10 @@ where
     F: FnOnce() -> Result<V, ResolveError>,
 {
     let cell = {
-        let mut map = map.lock().expect("CurseForge API cache mutex poisoned");
+        let mut map = map.lock().map_err(|_| ResolveError::Cache {
+            path: "in-memory".to_string(),
+            message: "CurseForge API cache mutex was poisoned".to_string(),
+        })?;
         map.entry(key)
             .or_insert_with(|| Arc::new(OnceLock::new()))
             .clone()
@@ -306,6 +315,9 @@ impl<A: CurseForgeApi> DependencyResolver<A> {
             return Err(ResolveError::MissingDownloadUrl {
                 project_id: project.id,
                 file_id: file.id,
+                project_page_url: entry
+                    .dependency_type
+                    .curseforge_file_page_url(&project.slug, file.id),
             });
         }
 

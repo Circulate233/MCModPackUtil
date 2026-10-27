@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod client;
 pub mod model;
 pub mod resolver;

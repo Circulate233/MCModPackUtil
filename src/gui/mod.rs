@@ -4,8 +4,13 @@ use std::sync::Arc;
 #[cfg(feature = "gui")]
 pub mod app;
 pub mod command;
+#[cfg(feature = "gui")]
+pub mod loader_versions;
 pub mod mod_list;
+pub mod overrides;
 pub mod settings;
+#[cfg(feature = "gui")]
+pub mod sync_tree;
 
 #[cfg(feature = "gui")]
 pub fn run_gui() -> Result<(), GuiError> {

@@ -175,7 +175,8 @@ where
         version: manifest.version.clone(),
         file_count: manifest.files.len(),
     });
-    let config = Config::from_imported_manifest(&manifest, language.clone());
+    // An empty project language means the CLI and GUI resolve the system locale at use time.
+    let config = Config::from_imported_manifest(&manifest, String::new())?;
     let resolved = match api {
         Some(api) => {
             let cached_api = CachedCurseForgeApi::new(api);
@@ -194,6 +195,7 @@ where
         output_dir.join("config.toml"),
         &toml::to_string_pretty(&config)?,
     )?;
+    config.test_run.write_to_project(output_dir)?;
     write_list(
         output_dir.join("common.json"),
         &entries_for_side(&entries, DependencySide::Common),

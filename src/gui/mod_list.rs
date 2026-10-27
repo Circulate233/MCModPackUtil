@@ -1,9 +1,13 @@
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::hash::Hash;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::config::{Config, ConfigError};
@@ -15,31 +19,55 @@ use crate::dependency::{DependencyEntry, DependencySide, DependencyType};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuiDependencyList {
     pub entries: Vec<GuiModEntry>,
+    contaminated_manifests: BTreeSet<ManifestList>,
 }
 
 impl GuiDependencyList {
+    #[cfg(feature = "gui")]
+    pub(crate) fn from_entries(entries: Vec<GuiModEntry>) -> Self {
+        Self {
+            entries,
+            contaminated_manifests: BTreeSet::new(),
+        }
+    }
+
+    pub fn is_manifest_contaminated(&self, manifest: ManifestList) -> bool {
+        self.contaminated_manifests.contains(&manifest)
+    }
+
+    pub fn contaminated_manifests(&self) -> impl Iterator<Item = ManifestList> + '_ {
+        self.contaminated_manifests.iter().copied()
+    }
+
     pub fn load(project_dir: impl AsRef<Path>) -> Result<Self, ModListIoError> {
         let project_dir = project_dir.as_ref();
         let mut entries = Vec::new();
+        let mut contaminated_manifests = BTreeSet::new();
         for manifest in ManifestList::ALL {
-            entries.extend(read_manifest(project_dir, manifest)?);
+            let loaded = read_manifest(project_dir, manifest)?;
+            entries.extend(loaded.entries);
+            if loaded.contaminated {
+                contaminated_manifests.insert(manifest);
+            }
         }
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            contaminated_manifests,
+        })
     }
 
     pub fn save(&self, project_dir: impl AsRef<Path>) -> Result<(), ModListIoError> {
-        self.validate()?;
-        let project_dir = project_dir.as_ref();
-        for manifest in ManifestList::ALL {
-            let entries = self
-                .entries
-                .iter()
-                .filter(|entry| entry.manifest == manifest)
-                .map(GuiModEntry::to_dependency_entry)
-                .collect::<Vec<_>>();
-            write_manifest(project_dir, manifest, &entries)?;
+        if !self.contaminated_manifests.is_empty() {
+            return Err(ModListIoError::ContaminatedManifests {
+                files: self
+                    .contaminated_manifests()
+                    .map(ManifestList::file_name)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
         }
-        Ok(())
+        self.validate()?;
+        write_manifests_transactionally(project_dir.as_ref(), &self.entries)
     }
 
     pub fn validate(&self) -> Result<(), ModListValidationError> {
@@ -82,6 +110,7 @@ impl GuiDependencyList {
                 .filter(|entry| entry.matches_search(&needle))
                 .cloned()
                 .collect(),
+            contaminated_manifests: self.contaminated_manifests.clone(),
         }
     }
 
@@ -506,7 +535,7 @@ pub struct ModListProjectSettings {
 pub fn load_project_settings_for_mod_list(
     project_dir: &Path,
 ) -> Result<ModListProjectSettings, ConfigError> {
-    let config = Config::from_path(project_dir.join("config.toml"))?;
+    let config = Config::from_path_for_settings(project_dir.join("config.toml"))?;
     Ok(ModListProjectSettings {
         minecraft_version: config.pack.minecraft_version,
         loader: config.pack.loader.manifest_name().to_string(),
@@ -528,7 +557,7 @@ pub fn load_project_config_for_mod_list(
         minecraft_version: config.pack.minecraft_version,
         loader: config.pack.loader.manifest_name().to_string(),
         api_key,
-        proxy: config.network.proxy_url()?,
+        proxy: None,
     })
 }
 
@@ -583,6 +612,12 @@ pub enum ModListIoError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "cannot save mod list because these manifest files contain malformed or unsupported entries: {files}"
+    )]
+    ContaminatedManifests { files: String },
+    #[error("mod list save transaction failed: {reason}")]
+    Transaction { reason: String },
     #[error("{0}")]
     Validation(#[from] ModListValidationError),
 }
@@ -652,39 +687,343 @@ pub enum ModListConfigError {
     ApiKey(#[from] ResolveError),
 }
 
+struct ManifestLoadResult {
+    entries: Vec<GuiModEntry>,
+    contaminated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuiManifestEntry {
+    project_id: Option<u64>,
+    file_id: Option<u64>,
+    slug: Option<String>,
+    loader: Option<String>,
+    #[serde(default)]
+    side: Option<DependencySide>,
+    #[serde(rename = "type")]
+    dependency_type: DependencyType,
+    name: String,
+    #[serde(default)]
+    authors: Vec<String>,
+    required: bool,
+}
+
+impl From<GuiManifestEntry> for DependencyEntry {
+    fn from(entry: GuiManifestEntry) -> Self {
+        Self {
+            project_id: entry.project_id,
+            file_id: entry.file_id,
+            slug: entry.slug,
+            loader: entry.loader,
+            side: entry.side.unwrap_or(DependencySide::Common),
+            dependency_type: entry.dependency_type,
+            name: entry.name,
+            authors: entry.authors,
+            required: entry.required,
+        }
+    }
+}
+
 fn read_manifest(
     project_dir: &Path,
     manifest: ManifestList,
-) -> Result<Vec<GuiModEntry>, ModListIoError> {
+) -> Result<ManifestLoadResult, ModListIoError> {
     let path = project_dir.join(manifest.file_name());
-    let text = fs::read_to_string(&path).map_err(|source| ModListIoError::Read {
-        path: path.clone(),
-        source,
-    })?;
-    let entries = serde_json::from_str::<Vec<DependencyEntry>>(&text).map_err(|source| {
-        ModListIoError::Parse {
-            path: path.clone(),
-            source,
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ManifestLoadResult {
+                entries: Vec::new(),
+                contaminated: false,
+            });
         }
-    })?;
-    Ok(entries
-        .into_iter()
-        .map(|entry| GuiModEntry::from_dependency_entry(manifest, entry))
-        .collect())
+        Err(source) => {
+            return Err(ModListIoError::Read {
+                path: path.clone(),
+                source,
+            });
+        }
+    };
+    let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+        return Ok(ManifestLoadResult {
+            entries: Vec::new(),
+            contaminated: true,
+        });
+    };
+    let mut loaded = Vec::new();
+    let mut contaminated = false;
+    for value in entries {
+        let Ok(entry) = serde_json::from_value::<GuiManifestEntry>(value) else {
+            contaminated = true;
+            continue;
+        };
+        let entry = GuiModEntry::from_dependency_entry(manifest, entry.into());
+        if entry.validate().is_err() {
+            contaminated = true;
+            continue;
+        }
+        loaded.push(entry);
+    }
+    Ok(ManifestLoadResult {
+        entries: loaded,
+        contaminated,
+    })
 }
 
-fn write_manifest(
+static MANIFEST_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
+
+struct StagedManifest {
+    target: PathBuf,
+    temporary: PathBuf,
+    backup: PathBuf,
+    original_exists: bool,
+    temporary_created: bool,
+    backup_created: bool,
+    original_removed: bool,
+    committed: bool,
+}
+
+fn write_manifests_transactionally(
     project_dir: &Path,
-    manifest: ManifestList,
-    entries: &[DependencyEntry],
+    entries: &[GuiModEntry],
 ) -> Result<(), ModListIoError> {
-    let path = project_dir.join(manifest.file_name());
-    let text =
-        serde_json::to_string_pretty(entries).map_err(|source| ModListIoError::Serialize {
-            path: path.clone(),
-            source,
+    let suffix = manifest_transaction_suffix();
+    let mut staged = Vec::with_capacity(ManifestList::ALL.len());
+
+    for manifest in ManifestList::ALL {
+        let target = project_dir.join(manifest.file_name());
+        let original_exists = match fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_file() => true,
+            Ok(_) => {
+                return Err(transaction_error(format!(
+                    "manifest target '{}' is not a regular file",
+                    target.display()
+                )));
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => false,
+            Err(source) => {
+                return Err(transaction_error(format!(
+                    "failed to inspect manifest target '{}': {source}",
+                    target.display()
+                )));
+            }
+        };
+        let manifest_entries = entries
+            .iter()
+            .filter(|entry| entry.manifest == manifest)
+            .map(GuiModEntry::to_dependency_entry)
+            .collect::<Vec<_>>();
+        let bytes = serde_json::to_vec_pretty(&manifest_entries).map_err(|source| {
+            ModListIoError::Serialize {
+                path: target.clone(),
+                source,
+            }
         })?;
-    fs::write(&path, text).map_err(|source| ModListIoError::Write { path, source })
+        staged.push((manifest, target, original_exists, bytes));
+    }
+
+    let mut transaction = Vec::with_capacity(staged.len());
+    for (manifest, target, original_exists, bytes) in staged {
+        let temporary = project_dir.join(format!(".{}.mcmpu-{suffix}.tmp", manifest.file_name()));
+        let backup = project_dir.join(format!(".{}.mcmpu-{suffix}.bak", manifest.file_name()));
+        let mut item = StagedManifest {
+            target,
+            temporary,
+            backup,
+            original_exists,
+            temporary_created: false,
+            backup_created: false,
+            original_removed: false,
+            committed: false,
+        };
+        let write_result = write_new_file(&mut item, &bytes);
+        transaction.push(item);
+        if let Err(source) = write_result {
+            let cleanup = cleanup_staged_files(&mut transaction);
+            return Err(transaction_error_with_cleanup(
+                format!("failed to stage manifest: {source}"),
+                cleanup,
+            ));
+        }
+    }
+
+    for index in 0..transaction.len() {
+        let target_display = transaction[index].target.display().to_string();
+        if transaction[index].original_exists {
+            if let Err(source) = backup_original(&mut transaction[index]) {
+                return Err(rollback_transaction(
+                    &mut transaction,
+                    format!("failed to back up '{target_display}': {source}"),
+                ));
+            }
+            if let Err(source) = fs::remove_file(&transaction[index].target) {
+                return Err(rollback_transaction(
+                    &mut transaction,
+                    format!("failed to replace '{target_display}': {source}"),
+                ));
+            }
+            transaction[index].original_removed = true;
+        }
+        if let Err(source) = fs::rename(&transaction[index].temporary, &transaction[index].target) {
+            return Err(rollback_transaction(
+                &mut transaction,
+                format!("failed to publish '{target_display}': {source}"),
+            ));
+        }
+        transaction[index].temporary_created = false;
+        transaction[index].committed = true;
+    }
+
+    let cleanup = cleanup_committed_transaction(&mut transaction);
+    if cleanup.is_empty() {
+        Ok(())
+    } else {
+        Err(transaction_error(format!(
+            "manifests were saved but transaction cleanup failed: {}",
+            cleanup.join("; ")
+        )))
+    }
+}
+
+fn write_new_file(item: &mut StagedManifest, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&item.temporary)?;
+    item.temporary_created = true;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn backup_original(item: &mut StagedManifest) -> Result<(), std::io::Error> {
+    let mut source = OpenOptions::new().read(true).open(&item.target)?;
+    let mut backup = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&item.backup)?;
+    item.backup_created = true;
+    std::io::copy(&mut source, &mut backup)?;
+    backup.sync_all()
+}
+
+fn rollback_transaction(transaction: &mut [StagedManifest], reason: String) -> ModListIoError {
+    let mut rollback_errors = Vec::new();
+    for item in transaction.iter_mut().rev() {
+        if item.committed {
+            if let Err(source) = fs::remove_file(&item.target)
+                && source.kind() != std::io::ErrorKind::NotFound
+            {
+                rollback_errors.push(format!(
+                    "failed to remove new '{}': {source}",
+                    item.target.display()
+                ));
+            }
+            item.committed = false;
+        }
+        if item.backup_created {
+            if item.original_removed {
+                match fs::symlink_metadata(&item.target) {
+                    Ok(_) => rollback_errors.push(format!(
+                        "cannot restore '{}' while the replacement still exists; original preserved at '{}'",
+                        item.target.display(),
+                        item.backup.display()
+                    )),
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                        if let Err(source) = fs::rename(&item.backup, &item.target) {
+                            rollback_errors.push(format!(
+                                "failed to restore '{}' from '{}': {source}; original backup was preserved",
+                                item.target.display(),
+                                item.backup.display()
+                            ));
+                        } else {
+                            item.backup_created = false;
+                            item.original_removed = false;
+                        }
+                    }
+                    Err(source) => rollback_errors.push(format!(
+                        "failed to inspect '{}' before restoring '{}': {source}; original backup was preserved",
+                        item.target.display(),
+                        item.backup.display()
+                    )),
+                }
+            } else {
+                match fs::remove_file(&item.backup) {
+                    Ok(()) => item.backup_created = false,
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                        item.backup_created = false;
+                    }
+                    Err(source) => rollback_errors.push(format!(
+                        "failed to remove unused backup '{}': {source}",
+                        item.backup.display()
+                    )),
+                }
+            }
+        }
+    }
+    rollback_errors.extend(cleanup_staged_files(transaction));
+    transaction_error_with_cleanup(reason, rollback_errors)
+}
+
+fn cleanup_staged_files(transaction: &mut [StagedManifest]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for item in transaction {
+        if item.temporary_created {
+            match fs::remove_file(&item.temporary) {
+                Ok(()) => item.temporary_created = false,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                    item.temporary_created = false;
+                }
+                Err(source) => errors.push(format!(
+                    "failed to remove staged file '{}': {source}",
+                    item.temporary.display()
+                )),
+            }
+        }
+    }
+    errors
+}
+
+fn cleanup_committed_transaction(transaction: &mut [StagedManifest]) -> Vec<String> {
+    let mut errors = cleanup_staged_files(transaction);
+    for item in transaction {
+        if item.backup_created {
+            match fs::remove_file(&item.backup) {
+                Ok(()) => item.backup_created = false,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                    item.backup_created = false;
+                }
+                Err(source) => errors.push(format!(
+                    "failed to remove committed backup '{}': {source}",
+                    item.backup.display()
+                )),
+            }
+        }
+    }
+    errors
+}
+
+fn transaction_error(reason: String) -> ModListIoError {
+    ModListIoError::Transaction { reason }
+}
+
+fn transaction_error_with_cleanup(reason: String, cleanup: Vec<String>) -> ModListIoError {
+    if cleanup.is_empty() {
+        transaction_error(reason)
+    } else {
+        transaction_error(format!(
+            "{reason}; cleanup/rollback errors: {}",
+            cleanup.join("; ")
+        ))
+    }
+}
+
+fn manifest_transaction_suffix() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let sequence = MANIFEST_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{timestamp}-{sequence}", std::process::id())
 }
 
 fn find_project<A: CurseForgeApi>(

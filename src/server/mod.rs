@@ -1,3 +1,3 @@
 pub mod files;
+pub mod installer;
 pub mod loader;
-pub mod scripts;

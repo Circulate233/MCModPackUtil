@@ -1,6 +1,6 @@
 use assert_cmd::Command;
 use clap::Parser;
-use mcmpu::cli::{Cli, Command as CliCommand};
+use mcmpu::cli::{Cli, CliBuildTarget, CliServerPlatform, Command as CliCommand};
 use predicates::prelude::*;
 
 mod support;
@@ -41,6 +41,63 @@ fn gui_command_parses_to_gui_variant() {
     let parsed = Cli::try_parse_from(["mcmpu", "gui"]).unwrap();
 
     assert!(matches!(parsed.command, CliCommand::Gui));
+}
+
+#[test]
+fn build_command_defaults_to_both_and_current_platform() {
+    let parsed = Cli::try_parse_from(["mcmpu", "build"]).unwrap();
+
+    assert!(matches!(
+        parsed.command,
+        CliCommand::Build {
+            target: CliBuildTarget::Both,
+            server_platform: None,
+            output: None,
+        }
+    ));
+}
+
+#[test]
+fn build_command_parses_target_platform_and_output() {
+    let parsed = Cli::try_parse_from([
+        "mcmpu",
+        "build",
+        "--target",
+        "server",
+        "--server-platform",
+        "linux-x86_64",
+        "--output",
+        "F:/external/output",
+    ])
+    .unwrap();
+
+    assert!(matches!(
+        parsed.command,
+        CliCommand::Build {
+            target: CliBuildTarget::Server,
+            server_platform: Some(CliServerPlatform::LinuxX86_64),
+            output: Some(ref path),
+        } if path == std::path::Path::new("F:/external/output")
+    ));
+}
+
+#[test]
+fn build_rejects_server_platform_for_client_target_before_loading_project() {
+    let mut command = Command::cargo_bin("mcmpu").unwrap();
+
+    command
+        .args([
+            "build",
+            "--target",
+            "client",
+            "--server-platform",
+            "windows-x86_64",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "--server-platform cannot be used with --target client",
+        ));
 }
 
 #[test]
@@ -152,7 +209,7 @@ fn check_accepts_api_key_from_common_environment_alias() {
 }
 
 #[test]
-fn check_applies_proxy_argument_when_api_key_comes_from_environment() {
+fn check_rejects_invalid_explicit_proxy_before_network_access() {
     let temp = tempfile::tempdir().unwrap();
     let mut config = support::sample_config();
     config.language = "en-US".to_string();
@@ -174,18 +231,19 @@ fn check_applies_proxy_argument_when_api_key_comes_from_environment() {
         .args(["--proxy", "not a proxy url", "check"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("builder error"));
+        .stderr(predicate::str::contains("invalid proxy URL"))
+        .stderr(predicate::str::contains("secret").not());
 }
 
 #[test]
-fn check_applies_proxy_host_and_port_from_config() {
+fn check_rejects_invalid_configured_proxy_before_network_access() {
     let temp = tempfile::tempdir().unwrap();
     let mut config = support::sample_config();
     config.language = "en-US".to_string();
     config.pack.loader = mcmpu::config::LoaderKind::Forge;
     config.pack.forge_compat_version = None;
     config.cleanroom = None;
-    config.network.proxy_ip = "999.999.999.999".to_string();
+    config.network.proxy_ip = "not a proxy host".to_string();
     config.network.proxy_port = 7890;
     std::fs::write(
         temp.path().join("config.toml"),
@@ -202,7 +260,8 @@ fn check_applies_proxy_host_and_port_from_config() {
         .arg("check")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("builder error"));
+        .stderr(predicate::str::contains("invalid proxy URL"))
+        .stderr(predicate::str::contains("secret").not());
 }
 
 #[test]
@@ -256,4 +315,28 @@ fn init_detects_language_from_environment() {
         .assert()
         .success()
         .stdout(predicate::str::contains("初始化完成"));
+}
+
+/// The run commands launch and supervise the game, so their help must not describe them as pure
+/// preparation steps, and the options must document what they override.
+#[test]
+fn help_describes_the_run_commands_and_option_precedence() {
+    let mut command = Command::cargo_bin("mcmpu").unwrap();
+    command
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("supervise"))
+        .stdout(predicate::str::contains("config.toml"))
+        // The API key option names the environment variables it falls back to.
+        .stdout(predicate::str::contains("CURSEFORGE_API_KEY"))
+        .stdout(predicate::str::contains("http://127.0.0.1:7890"));
+
+    // A stale description would claim the run commands only prepare a directory.
+    let mut command = Command::cargo_bin("mcmpu").unwrap();
+    command
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Prepare the client run directory").not());
 }

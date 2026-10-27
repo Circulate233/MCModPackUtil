@@ -7,8 +7,12 @@ use mcmpu::config::{
 use mcmpu::curseforge::model::{CfFile, CfProject, FileHash, ReleaseType};
 use mcmpu::curseforge::resolver::{CurseForgeApi, ResolveError};
 use mcmpu::dependency::{DependencyEntry, DependencySide, DependencyType};
-use std::fs::File;
-use std::io::Write;
+use mcmpu::project::cleanroom_relauncher::{MmcPackSource, mmc_pack_release_url};
+use mcmpu::server::installer::{ServerInstallerAsset, ServerInstallerSource, ServerPlatform};
+use sha1::{Digest, Sha1};
+use sha2::Sha256;
+use std::fs::{self, File};
+use std::io::{Cursor, Write};
 use std::path::Path;
 use zip::write::SimpleFileOptions;
 
@@ -29,6 +33,7 @@ pub fn sample_config() -> Config {
             output_dir: "dist".to_string(),
         },
         java: JavaConfig {
+            version_major: 8,
             client: JavaMemoryConfig {
                 min_memory: "2G".to_string(),
                 max_memory: "4G".to_string(),
@@ -88,6 +93,119 @@ pub fn empty_manifest() -> String {
 }
 
 pub struct FixtureApi;
+
+pub struct FixtureMmcPackSource;
+
+pub struct FixtureServerInstallerSource;
+
+impl ServerInstallerSource for FixtureServerInstallerSource {
+    type Error = std::io::Error;
+
+    fn prepare(
+        &self,
+        project_dir: &Path,
+        platform: ServerPlatform,
+    ) -> Result<ServerInstallerAsset, Self::Error> {
+        let fixture_dir = project_dir.join(".mcmpu/test-server-installer-assets");
+        fs::create_dir_all(&fixture_dir)?;
+        let (name, bytes) = match platform {
+            ServerPlatform::LinuxX86_64 => (
+                "MCServerDownloadTool-linux-x86_64",
+                b"fixture-linux-installer".as_slice(),
+            ),
+            ServerPlatform::MacosAarch64 => (
+                "MCServerDownloadTool-macos-aarch64",
+                b"fixture-macos-installer".as_slice(),
+            ),
+            ServerPlatform::WindowsX86_64 => (
+                "MCServerDownloadTool-windows-x86_64.exe",
+                b"fixture-windows-installer".as_slice(),
+            ),
+        };
+        let path = fixture_dir.join(name);
+        fs::write(&path, bytes)?;
+        ServerInstallerAsset::new(
+            platform,
+            path,
+            bytes.len() as u64,
+            format!("{:x}", Sha256::digest(bytes)),
+        )
+        .map_err(std::io::Error::other)
+    }
+}
+
+impl MmcPackSource for FixtureMmcPackSource {
+    type Error = std::io::Error;
+
+    fn fetch(&self, url: &str) -> Result<Vec<u8>, Self::Error> {
+        let without_sha1 = url.strip_suffix(".sha1").unwrap_or(url);
+        let file_name = without_sha1.rsplit('/').next().unwrap_or_default();
+        let version = file_name
+            .strip_prefix("cleanroom-")
+            .and_then(|value| value.strip_suffix(".zip"))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("unexpected Cleanroom MMC URL '{url}'"),
+                )
+            })?;
+        if without_sha1 != mmc_pack_release_url(version).unwrap() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unexpected Cleanroom MMC URL '{url}'"),
+            ));
+        }
+        let bytes = fixture_mmc_pack(version);
+        if url.ends_with(".sha1") {
+            Ok(format!("{:x}\n", Sha1::digest(&bytes)).into_bytes())
+        } else {
+            Ok(bytes)
+        }
+    }
+}
+
+pub fn fixture_mmc_pack(version: &str) -> Vec<u8> {
+    fixture_mmc_pack_with_lwjgl(version, true)
+}
+
+pub fn fixture_mmc_pack_without_lwjgl(version: &str) -> Vec<u8> {
+    fixture_mmc_pack_with_lwjgl(version, false)
+}
+
+fn fixture_mmc_pack_with_lwjgl(version: &str, include_lwjgl: bool) -> Vec<u8> {
+    let cursor = Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(cursor);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let manifest = serde_json::json!({
+        "formatVersion": 1,
+        "components": [
+            {"uid": "net.minecraft", "version": "1.12.2"},
+            {"uid": "net.minecraftforge", "version": version}
+        ]
+    });
+    let forge_patch = serde_json::json!({
+        "libraries": [{"name": format!("com.cleanroommc:cleanroom:{version}")}]
+    });
+    let mut entries = vec![
+        ("mmc-pack.json", serde_json::to_vec(&manifest).unwrap()),
+        (
+            "patches/net.minecraft.json",
+            br#"{"libraries":[]}"#.to_vec(),
+        ),
+        (
+            "patches/net.minecraftforge.json",
+            serde_json::to_vec(&forge_patch).unwrap(),
+        ),
+    ];
+    if include_lwjgl {
+        entries.push(("patches/org.lwjgl3.json", br#"{"libraries":[]}"#.to_vec()));
+    }
+    for (name, bytes) in entries {
+        zip.start_file(name, options).unwrap();
+        zip.write_all(&bytes).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
 
 impl CurseForgeApi for FixtureApi {
     fn get_project(&self, project_id: u64) -> Result<CfProject, ResolveError> {
@@ -248,7 +366,7 @@ pub fn cf_file(id: u64, project_id: u64, file_name: &str, game_versions: &[&str]
             .collect(),
         dependencies: Vec::new(),
         download_url: Some(format!(
-            "https://cdn.example.invalid/{project_id}/{id}/{file_name}"
+            "https://edge.forgecdn.net/files/{project_id}/{id}/{file_name}"
         )),
         hashes: vec![FileHash {
             value: "0123456789abcdef0123456789abcdef01234567".to_string(),

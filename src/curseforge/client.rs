@@ -1,19 +1,23 @@
 use std::collections::BTreeSet;
 
-use reqwest::blocking::Client;
+use reqwest::Url;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Deserializer, de::Error};
 
 use crate::curseforge::model::{
     CfAuthor, CfFile, CfProject, FileDependency, FileHash, ReleaseType, SideSupport,
 };
 use crate::curseforge::resolver::{CurseForgeApi, ResolveError};
+use crate::net::{HttpRequest, HttpTransport, NetworkConfig, NetworkEngine, SensitiveHeaders};
 
 const CURSEFORGE_API_BASE: &str = "https://api.curseforge.com";
+const CURSEFORGE_API_RESPONSE_LIMIT: usize = 16 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct CurseForgeClient {
-    http: Client,
-    base_url: String,
-    api_key: String,
+    network: NetworkEngine,
+    base_url: Url,
+    api_key: SensitiveHeaders,
 }
 
 impl CurseForgeClient {
@@ -29,6 +33,14 @@ impl CurseForgeClient {
         Self::try_with_base_url_and_proxy(CURSEFORGE_API_BASE.to_string(), api_key, proxy)
     }
 
+    /// Creates a client on an existing shared network session.
+    pub fn with_network_engine(
+        api_key: String,
+        network: NetworkEngine,
+    ) -> Result<Self, ResolveError> {
+        Self::try_with_base_url_and_network(CURSEFORGE_API_BASE.to_string(), api_key, network)
+    }
+
     pub fn with_base_url_and_proxy(base_url: String, api_key: String, proxy: Option<&str>) -> Self {
         Self::try_with_base_url_and_proxy(base_url, api_key, proxy)
             .expect("valid CurseForge proxy configuration")
@@ -39,17 +51,37 @@ impl CurseForgeClient {
         api_key: String,
         proxy: Option<&str>,
     ) -> Result<Self, ResolveError> {
-        let mut builder = Client::builder();
-        if let Some(proxy) = proxy.map(str::trim).filter(|proxy| !proxy.is_empty()) {
-            builder = builder.proxy(
-                reqwest::Proxy::all(proxy).map_err(|err| ResolveError::Api(err.to_string()))?,
-            );
-        }
+        let network = NetworkEngine::new(NetworkConfig {
+            proxy: proxy
+                .map(str::trim)
+                .filter(|proxy| !proxy.is_empty())
+                .map(ToOwned::to_owned),
+            ..NetworkConfig::default()
+        })
+        .map_err(api_error)?;
+        Self::try_with_base_url_and_network(base_url, api_key, network)
+    }
+
+    /// Creates a client for an explicit API origin on an existing network session.
+    pub fn try_with_base_url_and_network(
+        base_url: String,
+        api_key: String,
+        network: NetworkEngine,
+    ) -> Result<Self, ResolveError> {
+        let base_url = parse_base_url(&base_url)?;
+        let api_key = SensitiveHeaders::new()
+            .allow_origin(base_url.as_str())
+            .and_then(|headers| {
+                HeaderValue::from_str(&api_key)
+                    .map_err(|source| crate::net::NetworkError::InvalidConfiguration {
+                        reason: format!("invalid CurseForge API key header: {source}"),
+                    })
+                    .and_then(|value| headers.insert(HeaderName::from_static("x-api-key"), value))
+            })
+            .map_err(api_error)?;
         Ok(Self {
-            http: builder
-                .build()
-                .map_err(|err| ResolveError::Api(err.to_string()))?,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            network,
+            base_url,
             api_key,
         })
     }
@@ -59,25 +91,39 @@ impl CurseForgeClient {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<T, ResolveError> {
-        let url = format!("{}{}", self.base_url, path);
-        let response = self
-            .http
-            .get(url)
-            .header("x-api-key", &self.api_key)
-            .query(query)
-            .send()
-            .map_err(|err| ResolveError::Api(err.to_string()))?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().unwrap_or_default();
-            return Err(ResolveError::Api(format!(
-                "CurseForge returned {status}: {body}"
-            )));
+        let mut url = self.base_url.clone();
+        let base_path = self.base_url.path().trim_end_matches('/');
+        url.set_path(&format!("{base_path}{path}"));
+        url.set_query(None);
+        if !query.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(name, value)| (*name, value.as_str())));
         }
-        response
-            .json()
-            .map_err(|err| ResolveError::Api(err.to_string()))
+        let request = HttpRequest::get(url.as_str(), CURSEFORGE_API_RESPONSE_LIMIT)
+            .sensitive_headers(self.api_key.clone())
+            .build()
+            .map_err(api_error)?;
+        self.network.get_json(request).map_err(api_error)
     }
+}
+
+fn parse_base_url(base_url: &str) -> Result<Url, ResolveError> {
+    let normalized = base_url.trim_end_matches('/');
+    let url = Url::parse(normalized).map_err(|source| {
+        ResolveError::Api(format!(
+            "invalid CurseForge API base URL '{base_url}': {source}"
+        ))
+    })?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(ResolveError::Api(format!(
+            "invalid CurseForge API base URL '{base_url}': expected an absolute HTTP URL"
+        )));
+    }
+    Ok(url)
+}
+
+fn api_error(error: impl std::fmt::Display) -> ResolveError {
+    ResolveError::Api(error.to_string())
 }
 
 impl CurseForgeApi for CurseForgeClient {

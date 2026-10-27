@@ -1,5 +1,12 @@
+mod archive;
+pub mod artifact_install;
 pub mod build;
 pub mod check;
 pub mod cleanroom;
+pub mod cleanroom_relauncher;
 pub mod init;
+pub mod jvm_args;
+pub mod launcher;
+pub mod process;
 pub mod run;
+pub mod runtime_install;

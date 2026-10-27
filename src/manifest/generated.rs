@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::config::Config;
+use crate::config::{Config, LoaderKind};
 use crate::dependency::DependencyEntry;
 
 #[derive(Debug, Error)]
@@ -10,6 +10,8 @@ pub enum GeneratedManifestError {
     MissingProjectId { name: String },
     #[error("dependency '{name}' is missing file_id")]
     MissingFileId { name: String },
+    #[error("Cleanroom requires forge_compat_version when generating a CurseForge manifest")]
+    MissingCleanroomForgeCompatVersion,
 }
 
 pub fn generate_modlist_html(entries: &[DependencyEntry]) -> String {
@@ -54,6 +56,16 @@ pub fn generate_pack_manifest(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let manifest_loader_version = match config.pack.loader {
+        LoaderKind::Cleanroom => config
+            .pack
+            .forge_compat_version
+            .as_deref()
+            .filter(|version| !version.trim().is_empty())
+            .ok_or(GeneratedManifestError::MissingCleanroomForgeCompatVersion)?,
+        _ => &config.pack.loader_version,
+    };
+
     Ok(json!({
         "manifestType": "minecraftModpack",
         "manifestVersion": 1,
@@ -64,7 +76,7 @@ pub fn generate_pack_manifest(
         "minecraft": {
             "version": config.pack.minecraft_version,
             "modLoaders": [{
-                "id": format!("{}-{}", config.pack.loader.manifest_name(), config.pack.loader_version),
+                "id": format!("{}-{manifest_loader_version}", config.pack.loader.manifest_name()),
                 "primary": true
             }]
         },

@@ -30,3 +30,6 @@ run
 # Added by cargo
 
 /target
+/.mcmpu/
+/test-run.toml
+*.log
