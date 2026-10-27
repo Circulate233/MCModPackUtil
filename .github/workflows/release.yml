@@ -22,8 +22,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.release.outputs.version }}
-      package-name: ${{ steps.release.outputs.package-name }}
-      binary-name: ${{ steps.release.outputs.binary-name }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,8 +32,20 @@ jobs:
 
       - name: Validate release tag
         id: release
-        shell: pwsh
-        run: ./.github/scripts/Verify-ReleaseTag.ps1
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
+            echo "invalid release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          tag_commit="$(git rev-parse "$GITHUB_REF_NAME^{commit}")"
+          if [[ "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "release tag does not point to the workflow commit" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
   quality:
     name: Release quality gate
@@ -54,14 +64,6 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-      - name: Test release workflow scripts
-        shell: pwsh
-        run: ./.github/scripts/Test-ReleaseScripts.ps1
-
-      - name: Lint GitHub Actions workflows
-        shell: pwsh
-        run: ./.github/scripts/Invoke-Actionlint.ps1
 
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
@@ -83,12 +85,15 @@ jobs:
           - os: windows-latest
             platform: windows-x86_64
             target: x86_64-pc-windows-msvc
+            binary: mcmpu.exe
           - os: ubuntu-latest
             platform: linux-x86_64
-            target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
+            binary: mcmpu
           - os: macos-15
             platform: macos-aarch64
             target: aarch64-apple-darwin
+            binary: mcmpu
     steps:
       - name: Check out tagged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -98,7 +103,6 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust target
-        shell: pwsh
         run: rustup target add "${{ matrix.target }}"
 
       - name: Cache Rust build
@@ -106,44 +110,60 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Verify native runner architecture
-        shell: pwsh
-        run: ./.github/scripts/Test-RunnerArchitecture.ps1 -Target "${{ matrix.target }}"
-
-      - name: Install musl linker
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes musl-tools
-
       - name: Build release binary
-        shell: pwsh
-        run: >-
-          $env:MCSDT_RELEASE_VERSION = "${{ needs.validate.outputs.version }}";
-          cargo build --release --locked --target "${{ matrix.target }}"
+        env:
+          MCMODPACKUTIL_BUILD_VERSION: ${{ needs.validate.outputs.version }}
+          MCMODPACKUTIL_CURSEFORGE_API_KEY: ${{ secrets.MCMODPACKUTIL_CURSEFORGE_API_KEY }}
+        run: cargo build --release --locked --target "${{ matrix.target }}"
 
-      - name: Smoke test release binary
+      - name: Smoke test and package release binary
+        id: package
         shell: pwsh
-        run: >-
-          ./.github/scripts/Test-BuiltBinary.ps1
-          -Target "${{ matrix.target }}"
-          -Platform "${{ matrix.platform }}"
-          -ExpectedVersion "${{ needs.validate.outputs.version }}"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binaryPath = Join-Path $PWD "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+            throw "Built binary was not found: $binaryPath"
+          }
 
-      - name: Stage raw release asset
-        id: stage
-        shell: pwsh
-        run: >-
-          ./.github/scripts/Stage-ReleaseBinary.ps1
-          -Target "${{ matrix.target }}"
-          -Platform "${{ matrix.platform }}"
-          -ExpectedVersion "${{ needs.validate.outputs.version }}"
+          $versionOutput = (& $binaryPath --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "Version probe failed with exit code $LASTEXITCODE: $versionOutput"
+          }
+          if ($versionOutput -cne "mcmpu ${{ needs.validate.outputs.version }}") {
+            throw "Unexpected built version: $versionOutput"
+          }
+
+          $packageDirectory = Join-Path $PWD 'package'
+          New-Item -ItemType Directory -Force -Path $packageDirectory | Out-Null
+          Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $packageDirectory '${{ matrix.binary }}')
+          if ('${{ matrix.platform }}' -eq 'windows-x86_64') {
+            $batch = "@echo off`r`nsetlocal`r`nset `"MCMPU_DIR=%~dp0`"`r`n`"%MCMPU_DIR%mcmpu.exe`" %*`r`nexit /b %ERRORLEVEL%`r`n"
+            [System.IO.File]::WriteAllText((Join-Path $packageDirectory 'mcmpu.bat'), $batch, [System.Text.Encoding]::ASCII)
+          }
+
+          $archiveName = "mcmpu-${{ needs.validate.outputs.version }}-${{ matrix.platform }}.zip"
+          if ($IsWindows) {
+            Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath $archiveName -CompressionLevel Optimal
+          } else {
+            Push-Location $packageDirectory
+            try {
+              $files = Get-ChildItem -File | ForEach-Object Name
+              & zip -q "../$archiveName" @files
+              if ($LASTEXITCODE -ne 0) { throw "zip exited with code $LASTEXITCODE" }
+            } finally {
+              Pop-Location
+            }
+          }
+
+          "artifact-name=release-${{ matrix.platform }}" >> $env:GITHUB_OUTPUT
+          "artifact-path=$archiveName" >> $env:GITHUB_OUTPUT
 
       - name: Upload staged release asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.stage.outputs.artifact-name }}
-          path: ${{ steps.stage.outputs.artifact-path }}
+          name: ${{ steps.package.outputs.artifact-name }}
+          path: ${{ steps.package.outputs.artifact-path }}
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
@@ -174,37 +194,62 @@ jobs:
           path: downloaded-assets
           merge-multiple: true
 
-      - name: Generate checksums and release index
+      - name: Generate checksums and release metadata
         shell: pwsh
-        run: >-
-          ./.github/scripts/New-ReleaseMetadata.ps1
-          -AssetDirectory ./downloaded-assets
-          -OutputDirectory ./dist
-          -Repository "${{ github.repository }}"
-          -Tag "${{ github.ref_name }}"
-          -CommitSha "${{ github.sha }}"
-          -RunId "${{ github.run_id }}"
-          -RunAttempt "${{ github.run_attempt }}"
-          -ServerUrl "${{ github.server_url }}"
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_ATTEMPT: ${{ github.run_attempt }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = @(Get-ChildItem -LiteralPath downloaded-assets -Filter '*.zip' -File | Sort-Object Name)
+          if ($assets.Count -ne 3) { throw "expected three platform archives, found $($assets.Count)" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+
+          $records = foreach ($asset in $assets) {
+            $hash = (Get-FileHash -LiteralPath $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            [System.IO.File]::WriteAllText((Join-Path dist "$($asset.Name).sha256"), "$hash  $($asset.Name)", $utf8)
+            Copy-Item -LiteralPath $asset.FullName -Destination (Join-Path dist $asset.Name)
+            [ordered]@{ name = $asset.Name; size = $asset.Length; sha256 = $hash }
+          }
+          $index = [ordered]@{
+            schemaVersion = 1
+            package = 'mcmpu'
+            version = $env:RELEASE_VERSION
+            tag = $env:RELEASE_TAG
+            commit = $env:RELEASE_COMMIT
+            assets = @($records)
+          }
+          $provenance = [ordered]@{
+            schemaVersion = 1
+            repository = $env:RELEASE_REPOSITORY
+            ref = "refs/tags/$($env:RELEASE_TAG)"
+            commit = $env:RELEASE_COMMIT
+            workflow = "$($env:SERVER_URL)/$($env:RELEASE_REPOSITORY)/actions/runs/$($env:RELEASE_RUN_ID)/attempts/$($env:RELEASE_ATTEMPT)"
+            assets = @($records)
+          }
+          $index | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath dist/release-index.json -Encoding utf8
+          $provenance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath dist/provenance.json -Encoding utf8
 
       - name: Attest release asset provenance
         id: attest
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: ./dist/MCModPackUtil-*
+          subject-path: ./dist/mcmpu-*.zip
 
       - name: Export provenance bundle
         shell: pwsh
-        run: Copy-Item -LiteralPath "${{ steps.attest.outputs.bundle-path }}" -Destination ./dist/provenance.sigstore.json
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: Copy-Item -LiteralPath $env:BUNDLE_PATH -Destination ./dist/provenance.sigstore.json
 
       - name: Create formal release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          release_flags=(--verify-tag --generate-notes --title "${GITHUB_REF_NAME}")
-          if [[ "${GITHUB_REF_NAME#v}" == *-* ]]; then
-            release_flags+=(--prerelease)
-          else
-            release_flags+=(--latest)
-          fi
-          gh release create "${GITHUB_REF_NAME}" dist/* "${release_flags[@]}"
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "$RELEASE_TAG" --latest

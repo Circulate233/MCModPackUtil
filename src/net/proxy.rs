@@ -220,6 +220,7 @@ fn first_entry(entries: &[(&str, &str)], canonical_name: &str) -> Option<String>
         .map(|(_, value)| (*value).to_string())
 }
 
+#[cfg(any(windows, test))]
 fn parse_system_proxy_rules(
     proxy: Option<&str>,
     bypass: Option<&str>,
@@ -275,6 +276,7 @@ fn parse_system_proxy_rules(
 /// PAC uses an ordered fallback list. The first supported, syntactically valid
 /// directive wins; `DIRECT` is an explicit direct-connection result. Invalid or
 /// unsupported entries are ignored so a later valid fallback can be used.
+#[cfg(any(windows, test))]
 fn parse_pac_proxy_result(value: &str) -> Result<Option<String>, &'static str> {
     for entry in value
         .split(';')
@@ -697,6 +699,7 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+#[cfg(windows)]
 fn redact_url(url: &Url) -> String {
     format!("{}://{}", url.scheme(), url.host_str().unwrap_or("unknown"))
 }
