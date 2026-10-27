@@ -280,6 +280,7 @@ fn build_rejects_runtime_and_generated_server_identities_in_overrides() {
                 .to_string()
                 .contains(relative.split('/').next().unwrap())
         );
+        assert!(!temp.path().join("dist").exists());
     }
 }
 
@@ -306,6 +307,42 @@ fn build_rejects_override_symlink_before_writing_outputs() {
     .unwrap_err();
 
     assert!(error.to_string().contains("symbolic link"));
+    assert!(!temp.path().join("dist").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn build_rejects_override_junction_before_writing_outputs() {
+    use std::process::Command;
+
+    let temp = tempfile::tempdir().unwrap();
+    support::write_build_project(temp.path());
+    let outside = temp.path().join("outside");
+    let junction = temp.path().join("overrides/common/config/linked");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::create_dir_all(junction.parent().unwrap()).unwrap();
+    std::fs::write(outside.join("linked.cfg"), b"outside").unwrap();
+    let junction = junction.to_string_lossy().replace('/', "\\");
+    let outside = outside.to_string_lossy().replace('/', "\\");
+    let status = Command::new("cmd.exe")
+        .args(["/D", "/C", "mklink", "/J"])
+        .arg(junction)
+        .arg(outside)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "failed to create an override test junction"
+    );
+
+    let error = build_project_with_sources(
+        temp.path(),
+        &support::FixtureApi,
+        &support::FixtureMmcPackSource,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("symbolic link or reparse point"));
     assert!(!temp.path().join("dist").exists());
 }
 

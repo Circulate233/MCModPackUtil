@@ -775,6 +775,7 @@ where
     progress(&BuildProgress::ReadingProject {
         project_dir: project_dir.display().to_string(),
     });
+    validate_override_layers(project_dir, target)?;
     let lists = ProjectLists::read_for_target(project_dir, target)?;
     let before_supplements = lists.total_len();
     progress(&BuildProgress::DependencyListsLoaded {
@@ -976,6 +977,52 @@ where
             .unwrap_or_default(),
     });
     Ok(artifacts)
+}
+
+fn validate_override_layers(project_dir: &Path, target: BuildTarget) -> Result<(), BuildError> {
+    if target.includes_client() {
+        let mut client_plan = ArchivePlan::new(DEFAULT_LIMITS);
+        collect_layer(
+            &mut client_plan,
+            &project_dir.join("overrides/common"),
+            Some("overrides"),
+            "overrides/common",
+            None,
+            true,
+        )?;
+        collect_layer(
+            &mut client_plan,
+            &project_dir.join("overrides/client"),
+            Some("overrides"),
+            "overrides/client",
+            Some("overrides/common"),
+            true,
+        )?;
+        collect_root_docs(&mut client_plan, project_dir)?;
+    }
+    if target.includes_server() {
+        let mut server_plan = ArchivePlan::new(DEFAULT_LIMITS);
+        collect_layer(
+            &mut server_plan,
+            &project_dir.join("overrides/common"),
+            None,
+            "overrides/common",
+            None,
+            true,
+        )
+        .map_err(server_override_error)?;
+        collect_layer(
+            &mut server_plan,
+            &project_dir.join("overrides/server"),
+            None,
+            "overrides/server",
+            Some("overrides/common"),
+            true,
+        )
+        .map_err(server_override_error)?;
+        collect_root_docs(&mut server_plan, project_dir).map_err(server_override_error)?;
+    }
+    Ok(())
 }
 
 fn remove_client_temp(result: &Result<(PathBuf, PathBuf), BuildError>) {

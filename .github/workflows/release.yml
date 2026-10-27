@@ -128,7 +128,7 @@ jobs:
 
           $versionOutput = (& $binaryPath --version | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) {
-            throw "Version probe failed with exit code $LASTEXITCODE: $versionOutput"
+            throw "Version probe failed with exit code ${LASTEXITCODE}: $versionOutput"
           }
           if ($versionOutput -cne "mcmpu ${{ needs.validate.outputs.version }}") {
             throw "Unexpected built version: $versionOutput"
