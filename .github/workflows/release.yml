@@ -148,7 +148,8 @@ jobs:
           } else {
             Push-Location $packageDirectory
             try {
-              $files = Get-ChildItem -File | ForEach-Object Name
+              # Keep a single filename as an array so splatting does not split it into characters.
+              $files = @(Get-ChildItem -File | ForEach-Object Name)
               & zip -q "../$archiveName" @files
               if ($LASTEXITCODE -ne 0) { throw "zip exited with code $LASTEXITCODE" }
             } finally {
