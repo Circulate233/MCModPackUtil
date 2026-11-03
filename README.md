@@ -44,9 +44,11 @@ CurseForge API key lookup order:
 
 1. `--curseforge-api-key <key>`
 2. `MCMODPACKUTIL_CURSEFORGE_API_KEY`, `CURSEFORGE_API_KEY`, or `CF_API_KEY`
-3. Official release builds may embed a CurseForge key at compile time.
+3. The CurseForge key embedded at compile time.
 
-`config.toml` does not store CurseForge API keys. Existing `[curseforge]` or `curseforge_api_key` entries are rejected with a migration error. GUI project lookup uses the runtime environment key or the official-build embedded key.
+Before compiling, set `MCMODPACKUTIL_CURSEFORGE_API_KEY`, `CURSEFORGE_API_KEY`, or `CF_API_KEY` in the build process environment (in that priority order; blank values are skipped). Both debug and release builds embed the selected key directly in the executable, so users do not need to configure a runtime key. Changing or removing these variables makes Cargo refresh the embedded value on the next build. GitHub Actions reads the same repository secret names in the same order; tagged release builds fail if no nonblank key is configured. Local builds without a key can still use a CLI or runtime environment key.
+
+`config.toml` does not store CurseForge API keys. Existing `[curseforge]` or `curseforge_api_key` entries are rejected with a migration error. GUI project lookup uses the runtime environment key or the embedded key.
 
 Proxy configuration is optional. Resolution order is `--proxy <url>`, `[network].proxy_ip` plus `[network].proxy_port` in `config.toml`, `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` and `NO_PROXY` (including lowercase forms), then on Windows the current user's static proxy or PAC/WPAD settings, and finally direct connections.
 
@@ -139,9 +141,11 @@ CurseForge API key 读取优先级：
 
 1. `--curseforge-api-key <key>`
 2. `MCMODPACKUTIL_CURSEFORGE_API_KEY`、`CURSEFORGE_API_KEY` 或 `CF_API_KEY`
-3. 官方发布构建可在编译期内置 CurseForge key。
+3. 编译期内置的 CurseForge key。
 
-`config.toml` 不保存 CurseForge API key。旧配置中的 `[curseforge]` 或 `curseforge_api_key` 会触发迁移错误。GUI 项目查询使用运行时环境变量 key 或官方构建内置 key。
+编译前，在构建进程的环境变量中设置 `MCMODPACKUTIL_CURSEFORGE_API_KEY`、`CURSEFORGE_API_KEY` 或 `CF_API_KEY`（按此顺序读取，跳过空白值）。debug 和 release 构建都会将选中的 key 直接内置到可执行文件，使用者无需在运行时配置 key。修改或移除这些变量后，Cargo 会在下次构建时更新内置值。GitHub Actions 按相同顺序读取同名仓库 Secret；标签发布构建缺少非空 key 时直接失败。本地未设置 key 的构建仍可通过 CLI 参数或运行时环境变量提供 key。
+
+`config.toml` 不保存 CurseForge API key。旧配置中的 `[curseforge]` 或 `curseforge_api_key` 会触发迁移错误。GUI 项目查询使用运行时环境变量 key 或内置 key。
 
 代理配置是可选的。解析优先级依次为 `--proxy <url>`、`config.toml` 中同时配置的 `[network].proxy_ip` 与 `[network].proxy_port`、`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 与 `NO_PROXY`（包括小写形式）、Windows 当前用户的静态系统代理或 PAC/WPAD，最后才直连。
 

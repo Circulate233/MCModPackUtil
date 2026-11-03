@@ -51,16 +51,12 @@ fn api_key_resolver_reads_common_environment_aliases() {
 
 #[test]
 fn api_key_resolver_reads_compile_time_builtin_key() {
-    if cfg!(debug_assertions) {
-        assert_eq!(ApiKeyResolver::builtin_key(), None);
-    } else {
-        assert_eq!(
-            ApiKeyResolver::builtin_key().as_deref(),
-            option_env!("MCMPU_BUILTIN_CURSEFORGE_API_KEY")
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        );
-    }
+    assert_eq!(
+        ApiKeyResolver::builtin_key().as_deref(),
+        option_env!("MCMPU_BUILTIN_CURSEFORGE_API_KEY")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    );
 }
 
 #[test]

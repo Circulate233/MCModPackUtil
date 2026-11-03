@@ -111,10 +111,19 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build release binary
+        shell: pwsh
         env:
           MCMODPACKUTIL_BUILD_VERSION: ${{ needs.validate.outputs.version }}
           MCMODPACKUTIL_CURSEFORGE_API_KEY: ${{ secrets.MCMODPACKUTIL_CURSEFORGE_API_KEY }}
-        run: cargo build --release --locked --target "${{ matrix.target }}"
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+        run: |
+          $apiKeys = @($env:MCMODPACKUTIL_CURSEFORGE_API_KEY, $env:CURSEFORGE_API_KEY, $env:CF_API_KEY) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if (-not $apiKeys) {
+            throw "Configure repository secret MCMODPACKUTIL_CURSEFORGE_API_KEY (or CURSEFORGE_API_KEY / CF_API_KEY) before building a release."
+          }
+          cargo build --release --locked --target "${{ matrix.target }}"
 
       - name: Smoke test and package release binary
         id: package

@@ -86,9 +86,18 @@ jobs:
         shell: bash
         run: echo "MCMODPACKUTIL_BUILD_VERSION=${{ needs.version-policy.outputs.release-version }}" >> "${GITHUB_ENV}"
       - run: rustc --version
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - shell: pwsh
         env:
           MCMODPACKUTIL_CURSEFORGE_API_KEY: ${{ secrets.MCMODPACKUTIL_CURSEFORGE_API_KEY }}
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+        run: |
+          $apiKeys = @($env:MCMODPACKUTIL_CURSEFORGE_API_KEY, $env:CURSEFORGE_API_KEY, $env:CF_API_KEY) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          if ($env:GITHUB_REF.StartsWith('refs/tags/v') -and -not $apiKeys) {
+            throw "Configure repository secret MCMODPACKUTIL_CURSEFORGE_API_KEY (or CURSEFORGE_API_KEY / CF_API_KEY) before building a release."
+          }
+          cargo build --locked --release --target ${{ matrix.target }}
       - shell: bash
         run: |
           set -eu
